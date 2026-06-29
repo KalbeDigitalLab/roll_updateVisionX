@@ -1,0 +1,11 @@
+node_modules
+supabase
+supabase-project
+merge_logs_*
+auto_sync*
+run_test.sh
+.env
+.env.*
+config.local.env
+*.local.env
+!.env.example
