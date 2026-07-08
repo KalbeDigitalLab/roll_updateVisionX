@@ -1,0 +1,19 @@
+name: Trigger update sync
+
+on:
+  push:
+    branches: [main, feat/distribution]
+  workflow_dispatch: {}
+
+jobs:
+  trigger-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and trigger CronJob
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            sudo kubectl create job --from=cronjob/roll-updater-sync roll-updater-sync-ci-${{ github.sha }} -n roll-updater
