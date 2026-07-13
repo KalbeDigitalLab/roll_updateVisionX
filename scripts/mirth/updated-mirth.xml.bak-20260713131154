@@ -2,8 +2,8 @@
   <id>c074f1b3-6c09-49b7-b4b6-9c0ee22dc133</id>
   <nextMetaDataId>20</nextMetaDataId>
   <name>mirth-vision</name>
-  <description>mirth-vision-07-09-2026</description>
-  <revision>39</revision>
+  <description></description>
+  <revision>2</revision>
   <sourceConnector version="4.5.2">
     <metaDataId>0</metaDataId>
     <name>sourceConnector</name>
@@ -184,7 +184,17 @@ study.referrer = {
 	&quot;display&quot;: msg[&apos;PV1&apos;][&apos;PV1.8&apos;][&apos;PV1.8.1&apos;].toString() 
 }
 
-study.started = now;
+// Extract study date/time from OBR-7 (DICOM StudyDate + StudyTime = YYYYMMDDHHMMSS)
+var obr7Raw = msg[&apos;OBR&apos;][&apos;OBR.7&apos;][&apos;OBR.7.1&apos;] ? msg[&apos;OBR&apos;][&apos;OBR.7&apos;][&apos;OBR.7.1&apos;].toString().trim() : &apos;&apos;;
+if (obr7Raw.length &gt;= 14 &amp;&amp; obr7Raw.match(/^\d{14}/)) {
+    var studyMoment = moment.utc(obr7Raw.substring(0, 14), &apos;YYYYMMDDHHmmss&apos;, true);
+    study.started = studyMoment.isValid() ? studyMoment.toISOString() : now;
+} else if (obr7Raw.length &gt;= 8 &amp;&amp; obr7Raw.match(/^\d{8}/)) {
+    var studyMoment = moment.utc(obr7Raw.substring(0, 8), &apos;YYYYMMDD&apos;, true);
+    study.started = studyMoment.isValid() ? studyMoment.toISOString() : now;
+} else {
+    study.started = now;
+}
 
 
 
@@ -402,7 +412,7 @@ channelMap.put(&apos;UpdatedAccessionNumber&apos;, UpdatedAccessionNumber);</scr
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>false</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://iam.digital-lab.ai/keycloak/realms/dcm4che/protocol/openid-connect/token</host>
+        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/ksf/realms/dcm4che/protocol/openid-connect/token</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -424,13 +434,13 @@ channelMap.put(&apos;UpdatedAccessionNumber&apos;, UpdatedAccessionNumber);</scr
           <entry>
             <string>username</string>
             <list>
-              <string>admin</string>
+              <string>KC_USERNAME_FROM_ENV</string>
             </list>
           </entry>
           <entry>
             <string>password</string>
             <list>
-              <string>Password123!</string>
+              <string>KC_PASSWORD_FROM_ENV</string>
             </list>
           </entry>
         </parameters>
@@ -568,7 +578,7 @@ channelMap.put(&apos;keycloak_token&apos;, resp.access_token);</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://dicom-admin.digital-lab.ai/dcm4chee-arc/aets/WORKLIST/rs/mwlitems</host>
+        <host>VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/WORKLIST/rs/mwlitems</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -851,7 +861,7 @@ channelMap.put(&apos;audit_trail&apos;, JSON.stringify(trail_audit));</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/Patient</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/Patient</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1088,7 +1098,7 @@ try {
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/Patient/${patientID}</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/Patient/${patientID}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1275,7 +1285,7 @@ return isNew;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://dicom-admin.digital-lab.ai/dcm4chee-arc/aets/WORKLIST/rs/mwlitems/${StudyMwl}/${spsID}/status/COMPLETED</host>
+        <host>VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/WORKLIST/rs/mwlitems/${StudyMwl}/${spsID}/status/COMPLETED</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1437,7 +1447,7 @@ if ( noMWL == true ) {&#xd;	return false;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/ServiceRequest</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/ServiceRequest</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1780,7 +1790,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/ImagingStudy</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1960,7 +1970,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/ImagingStudy</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -2066,7 +2076,6 @@ var study = JSON.parse($(&apos;fhir_study&apos;));
 study.status = {};
 var studyID = $(&apos;studyID&apos;);
 var FhirId = $(&apos;FhirId&apos;);
-var UpdatedAccessionNumber = $(&apos;UpdatedAccessionNumber&apos;);
 var serviceRequest = JSON.parse($(&apos;fhir_service_request&apos;));
 var procedure = JSON.parse($(&apos;fhir_procedure&apos;));
 var log_audit = JSON.parse($(&apos;audit_log&apos;));
@@ -2094,7 +2103,7 @@ function fetchById(fhirId) {
     var httpClient = null;
     var httpResponse = null;
     try {
-        var urlStr = &quot;https://blue.digital-lab.ai/4_0_0/ImagingStudy/&quot; + encodeURIComponent(fhirId);
+        var urlStr = &quot;VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy/&quot; + encodeURIComponent(fhirId);
         logger.info(&quot;[ConflictCheck] fetchById URL=&quot; + urlStr);
 
         var RequestConfig = org.apache.http.client.config.RequestConfig;
@@ -2175,18 +2184,16 @@ try {
         serviceRequest.id = ConflictFhirId;
         procedure.id = ConflictFhirId;
 
-        var UniqueStudyID = studyID + &quot;-conflict-&quot; + UpdatedAccessionNumber;
-
         study.identifier = [
             { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId },
-            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: UniqueStudyID }
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: studyID }
         ];
         serviceRequest.identifier = [
             { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId }
         ];
         procedure.identifier = [
             { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId },
-            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: UniqueStudyID }
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: studyID }
         ];
 
         channelMap.put(&apos;fhir_study&apos;, JSON.stringify(study));
@@ -2196,32 +2203,8 @@ try {
         var accessionSupabase = &quot;eq.&quot; + ConflictFhirId;
         channelMap.put(&apos;accessionSupabase&apos;, accessionSupabase);
     } else {
-    	   var isStudyExist = ($(&apos;no_study&apos;) == false); 
         logger.info(&quot;[ConflictCheck] NO-STUDY branch — treating as fresh&quot;);
         channelMap.put(&apos;no_study&apos;, true);
-
-        // If no_study is false from the upstream channel check, it means 
-        // this studyID already exists in FHIR (claimed by the first existing study)
-        if (isStudyExist) {
-            logger.info(&quot;[ConflictCheck] STUDY-ID CONFLICT detected on fresh accession. Enforcing UniqueStudyID.&quot;);
-            
-            var UniqueStudyID = studyID + &quot;-conflict-&quot; + UpdatedAccessionNumber;
-            study.status = &quot;unknown&quot;;
-
-            // Update identifiers for both study and procedure payload
-            study.identifier = [
-                { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: FhirId },
-                { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: UniqueStudyID }
-            ];
-            procedure.identifier = [
-                { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: FhirId },
-                { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: UniqueStudyID }
-            ];
-
-            // Map the modified JSON objects back to the channelMap
-            channelMap.put(&apos;fhir_study&apos;, JSON.stringify(study));
-            channelMap.put(&apos;fhir_procedure&apos;, JSON.stringify(procedure));
-        }
     }
 } catch (e) {
     logger.error(&quot;[ConflictCheck] OUTER EXCEPTION: &quot; + e + &quot; | &quot; + (e.javaException ? e.javaException : &quot;&quot;));
@@ -2295,7 +2278,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://database.digital-lab.ai/supabase/rest/v1/performance</host>
+        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/base/rest/v1/performance</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -2304,7 +2287,7 @@ return true;</script>
           <entry>
             <string>apiKey</string>
             <list>
-              <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyAgCiAgICAicm9sZSI6ICJzZXJ2aWNlX3JvbGUiLAogICAgImlzcyI6ICJzdXBhYmFzZS1kZW1vIiwKICAgICJpYXQiOiAxNjQxNzY5MjAwLAogICAgImV4cCI6IDE3OTk1MzU2MDAKfQ.DaYlNEoUrrEn2Ig7tqibS-PHK5vgusbcbo7X36XVt4Q</string>
+              <string>SUPABASE_KEY_FROM_ENV</string>
             </list>
           </entry>
           <entry>
@@ -2559,7 +2542,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://dicom-admin.digital-lab.ai/dcm4chee-arc/aets/DCM4CHEE/rs/studies</host>
+        <host>VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/DCM4CHEE/rs/studies</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -2850,7 +2833,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/ImagingStudy/${FhirId}</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy/${FhirId}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3015,7 +2998,7 @@ if ( nostudy == true ) {&#xd;	var observation = JSON.parse($(&apos;fhir_study&ap
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/ServiceRequest/${FhirId}</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/ServiceRequest/${FhirId}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3203,7 +3186,7 @@ if ( nostudy == true &amp;&amp; noservice == true) {&#xd;	return noMWL;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://blue.digital-lab.ai/4_0_0/Procedure/${FhirId}</host>
+        <host>VISIONX_FHIR_BASE_FROM_ENV/Procedure/${FhirId}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3383,7 +3366,7 @@ if ( nostudy == true &amp;&amp; noservice == true) {&#xd;	return noMWL;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://database.digital-lab.ai/supabase/rest/v1/audit_log</host>
+        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/base/rest/v1/audit_log</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3392,7 +3375,7 @@ if ( nostudy == true &amp;&amp; noservice == true) {&#xd;	return noMWL;	&#xd;
           <entry>
             <string>apiKey</string>
             <list>
-              <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyAgCiAgICAicm9sZSI6ICJzZXJ2aWNlX3JvbGUiLAogICAgImlzcyI6ICJzdXBhYmFzZS1kZW1vIiwKICAgICJpYXQiOiAxNjQxNzY5MjAwLAogICAgImV4cCI6IDE3OTk1MzU2MDAKfQ.DaYlNEoUrrEn2Ig7tqibS-PHK5vgusbcbo7X36XVt4Q</string>
+              <string>SUPABASE_KEY_FROM_ENV</string>
             </list>
           </entry>
           <entry>
@@ -3550,7 +3533,7 @@ if ( nostudy == true ) {&#xd;	return true;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>https://database.digital-lab.ai/supabase/rest/v1/audit_trail</host>
+        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/base/rest/v1/audit_trail</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3559,7 +3542,7 @@ if ( nostudy == true ) {&#xd;	return true;	&#xd;
           <entry>
             <string>apiKey</string>
             <list>
-              <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyAgCiAgICAicm9sZSI6ICJzZXJ2aWNlX3JvbGUiLAogICAgImlzcyI6ICJzdXBhYmFzZS1kZW1vIiwKICAgICJpYXQiOiAxNjQxNzY5MjAwLAogICAgImV4cCI6IDE3OTk1MzU2MDAKfQ.DaYlNEoUrrEn2Ig7tqibS-PHK5vgusbcbo7X36XVt4Q</string>
+              <string>SUPABASE_KEY_FROM_ENV</string>
             </list>
           </entry>
           <entry>
@@ -3740,8 +3723,8 @@ return;</undeployScript>
     <metadata>
       <enabled>true</enabled>
       <lastModified>
-        <time>1783915898077</time>
-        <timezone>Asia/Bangkok</timezone>
+        <time>1776829736589</time>
+        <timezone>Asia/Jakarta</timezone>
       </lastModified>
       <pruningSettings>
         <archiveEnabled>true</archiveEnabled>
@@ -3755,7 +3738,7 @@ return;</undeployScript>
         <name>Library 1</name>
         <revision>1</revision>
         <lastModified>
-          <time>1760367060656</time>
+          <time>1761104884001</time>
           <timezone>Asia/Jakarta</timezone>
         </lastModified>
         <description></description>
@@ -3770,16 +3753,16 @@ return;</undeployScript>
             <name>Moment.js</name>
             <revision>1</revision>
             <lastModified>
-              <time>1760367060836</time>
+              <time>1761104884149</time>
               <timezone>Asia/Jakarta</timezone>
             </lastModified>
             <contextSet>
               <delegate>
+                <contextType>DESTINATION_FILTER_TRANSFORMER</contextType>
                 <contextType>DESTINATION_RESPONSE_TRANSFORMER</contextType>
                 <contextType>SOURCE_FILTER_TRANSFORMER</contextType>
                 <contextType>SOURCE_RECEIVER</contextType>
                 <contextType>DESTINATION_DISPATCHER</contextType>
-                <contextType>DESTINATION_FILTER_TRANSFORMER</contextType>
               </delegate>
             </contextSet>
             <properties class="com.mirth.connect.model.codetemplates.BasicCodeTemplateProperties">
