@@ -59,13 +59,13 @@ class LocalAdapter {
     return `${line.slice(0, lastColon + 1)}${leadWS}${newTag}${trailing}`;
   }
 
-  _findEnvVarNameLine(lines, envName) {
+  _findEnvVarNameLine(lines, envName, startIndex = 0, endIndex = lines.length) {
     const escapedName = envName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(
-      `^(\\s*)-\\s*name\\s*:\\s*['"]${escapedName}['"]\\s*$`,
+      `^(\\s*)-\\s*name\\s*:\\s*['"]?${escapedName}['"]?\\s*$`,
     );
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = startIndex; i < endIndex; i++) {
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith("#")) continue;
@@ -79,8 +79,8 @@ class LocalAdapter {
     return null;
   }
 
-  _findEnvValueLineAfter(lines, startIndex) {
-    for (let i = startIndex + 1; i < lines.length; i++) {
+  _findEnvValueLineAfter(lines, startIndex, endIndex = lines.length) {
+    for (let i = startIndex + 1; i < endIndex; i++) {
       const line = lines[i];
       const trimmed = line.trim();
 
@@ -90,6 +90,58 @@ class LocalAdapter {
     }
 
     return null;
+  }
+
+  _findKeyLine(lines, keyName, startIndex = 0, endIndex = lines.length) {
+    const regex = new RegExp(`^(\\s*)${keyName}\\s*:\\s*$`);
+    for (let i = startIndex; i < endIndex; i++) {
+      const match = lines[i].match(regex);
+      if (match) return { index: i, indent: match[1] };
+    }
+    return null;
+  }
+
+  _findEnvItemIndent(lines, envBlockIndex, envBlockEnd) {
+    for (let i = envBlockIndex + 1; i < envBlockEnd; i++) {
+      const match = lines[i].match(/^(\s*)-\s*name\s*:/);
+      if (match) return match[1];
+    }
+    return null;
+  }
+
+  _ensureEnvVar(lines, envBlockIndex, envBlockEnd, itemIndent, name, value) {
+    const existing = this._findEnvVarNameLine(
+      lines,
+      name,
+      envBlockIndex,
+      envBlockEnd,
+    );
+    const desiredValueLine = `${itemIndent}  value: '${value}'`;
+
+    if (existing) {
+      const valueLineIndex = this._findEnvValueLineAfter(
+        lines,
+        existing.index,
+        envBlockEnd,
+      );
+      if (valueLineIndex == null) {
+        lines.splice(existing.index + 1, 0, desiredValueLine);
+        return true;
+      }
+      if (lines[valueLineIndex] !== desiredValueLine) {
+        lines[valueLineIndex] = desiredValueLine;
+        return true;
+      }
+      return false;
+    }
+
+    lines.splice(
+      envBlockEnd,
+      0,
+      `${itemIndent}- name: '${name}'`,
+      desiredValueLine,
+    );
+    return true;
   }
 
   _findRisEnvInsertionAnchor(lines) {
@@ -687,6 +739,204 @@ class LocalAdapter {
         consoleUtils.success(`Updated probes in ${remoteFilename}`);
       } else {
         consoleUtils.info(`Probes already set correctly in ${remoteFilename}.`);
+      }
+
+      await execCommand(`kubectl apply -f ${fullPath}`);
+      consoleUtils.success(`Deployed: ${remoteFilename}`);
+    } catch (err) {
+      consoleUtils.error(`LocalAdapter error: ${err}`);
+      throw err;
+    }
+  }
+
+  async ensureDcm4cheePostgresEnv(remoteFilename) {
+    if (!remoteFilename) {
+      consoleUtils.info(
+        "DCM4CHEE_YAML_FILE not configured — skipping (optional).",
+      );
+      return;
+    }
+
+    const fullPath = path.join(this.remoteBasePath, remoteFilename);
+
+    try {
+      if (!fs.existsSync(fullPath)) {
+        consoleUtils.warn(
+          `${remoteFilename} not found at ${fullPath} — nothing to update.`,
+        );
+        return;
+      }
+
+      const postgresHost =
+        this.config.DCM4CHEE_POSTGRES_HOST || "visionx-supabase-db.supabase";
+      const postgresUser = this.config.SUPABASE_USER;
+      const postgresPassword = this.config.SUPABASE_PASSWORD;
+      const postgresDb = this.config.SUPABASE_DATABASE;
+
+      let lines = fs.readFileSync(fullPath, "utf8").split(/\r?\n/);
+      let changed = false;
+
+      const containersLine = this._findKeyLine(lines, "containers");
+      if (!containersLine) {
+        consoleUtils.warn(
+          `Could not find a "containers:" block in ${remoteFilename} — skipping postgres env injection.`,
+        );
+        return;
+      }
+
+      // --- initContainers: wait-for-postgres gate ---
+      const initLine = this._findKeyLine(
+        lines,
+        "initContainers",
+        0,
+        containersLine.index,
+      );
+
+      if (!initLine) {
+        const parentIndent = containersLine.indent;
+        const block = [
+          `${parentIndent}initContainers:`,
+          `${parentIndent}  - name: wait-for-postgres`,
+          `${parentIndent}    image: postgres:15-alpine`,
+          `${parentIndent}    env:`,
+          `${parentIndent}      - name: 'POSTGRES_HOST'`,
+          `${parentIndent}        value: '${postgresHost}'`,
+          `${parentIndent}      - name: 'POSTGRES_USER'`,
+          `${parentIndent}        value: '${postgresUser}'`,
+          `${parentIndent}    command:`,
+          `${parentIndent}      - sh`,
+          `${parentIndent}      - -c`,
+          `${parentIndent}      - |`,
+          `${parentIndent}        until pg_isready -h "$POSTGRES_HOST" -p 5432 -U "$POSTGRES_USER"; do`,
+          `${parentIndent}          echo "waiting for postgres to accept connections..."`,
+          `${parentIndent}          sleep 3`,
+          `${parentIndent}        done`,
+          `${parentIndent}        echo "postgres is accepting connections, continuing"`,
+        ];
+        lines.splice(containersLine.index, 0, ...block);
+        changed = true;
+        consoleUtils.success(
+          `Inserted wait-for-postgres initContainer into ${remoteFilename}`,
+        );
+      } else {
+        const initEnd = this._findRisBlockEnd(
+          lines,
+          initLine.index,
+          initLine.indent.length,
+        );
+        const initEnvBlock = this._findKeyLine(
+          lines,
+          "env",
+          initLine.index,
+          initEnd,
+        );
+
+        if (initEnvBlock) {
+          const initEnvEnd = this._findRisBlockEnd(
+            lines,
+            initEnvBlock.index,
+            initEnvBlock.indent.length,
+          );
+          const initItemIndent =
+            this._findEnvItemIndent(lines, initEnvBlock.index, initEnvEnd) ||
+            `${initEnvBlock.indent}  `;
+
+          changed =
+            this._ensureEnvVar(
+              lines,
+              initEnvBlock.index,
+              initEnvEnd,
+              initItemIndent,
+              "POSTGRES_HOST",
+              postgresHost,
+            ) || changed;
+
+          const initEnvEnd2 = this._findRisBlockEnd(
+            lines,
+            initEnvBlock.index,
+            initEnvBlock.indent.length,
+          );
+          changed =
+            this._ensureEnvVar(
+              lines,
+              initEnvBlock.index,
+              initEnvEnd2,
+              initItemIndent,
+              "POSTGRES_USER",
+              postgresUser,
+            ) || changed;
+        }
+      }
+
+      // --- main "arc" container's postgres env vars ---
+      const mainEnvVars = [
+        { name: "POSTGRES_HOST", value: postgresHost },
+        { name: "POSTGRES_DB", value: postgresDb },
+        { name: "POSTGRES_USER", value: postgresUser },
+        { name: "POSTGRES_PASSWORD", value: postgresPassword },
+        { name: "WILDFLY_CHOWN", value: "/storage" },
+        { name: "TZ", value: "Asia/Jakarta" },
+        { name: "LANG", value: "en_US.UTF-8" },
+        { name: "LC_ALL", value: "en_US.UTF-8" },
+        { name: "POSTGRES_DB_CHARSET", value: "utf8" },
+      ];
+
+      for (const envVar of mainEnvVars) {
+        const containersLineNow = this._findKeyLine(lines, "containers");
+        const imageLine = this._findFirstImageLine(
+          lines,
+          containersLineNow.index,
+        );
+        if (!imageLine) {
+          consoleUtils.warn(
+            `No container image found in ${remoteFilename} — skipping remaining postgres env injection.`,
+          );
+          break;
+        }
+
+        const portsBlock = this._findRisPortsBlock(lines, imageLine.index);
+        const searchEnd = portsBlock ? portsBlock.index : lines.length;
+        const envBlock = this._findKeyLine(
+          lines,
+          "env",
+          imageLine.index,
+          searchEnd,
+        );
+
+        if (!envBlock) {
+          consoleUtils.warn(
+            `Could not find the main container's "env:" block in ${remoteFilename} — skipping remaining postgres env injection.`,
+          );
+          break;
+        }
+
+        const envEnd = this._findRisBlockEnd(
+          lines,
+          envBlock.index,
+          envBlock.indent.length,
+        );
+        const itemIndent =
+          this._findEnvItemIndent(lines, envBlock.index, envEnd) ||
+          `${envBlock.indent}  `;
+
+        changed =
+          this._ensureEnvVar(
+            lines,
+            envBlock.index,
+            envEnd,
+            itemIndent,
+            envVar.name,
+            envVar.value,
+          ) || changed;
+      }
+
+      if (changed) {
+        fs.writeFileSync(fullPath, lines.join("\n"), "utf8");
+        consoleUtils.success(`Updated postgres env vars in ${remoteFilename}`);
+      } else {
+        consoleUtils.info(
+          `Postgres env vars already set correctly in ${remoteFilename}.`,
+        );
       }
 
       await execCommand(`kubectl apply -f ${fullPath}`);

@@ -20,6 +20,8 @@ const env = {
   BLUE_HALO_YAML_FILE: process.env.BLUE_HALO_YAML_FILE,
   OHIF_YAML_FILE: process.env.OHIF_YAML_FILE,
   DCM4CHEE_YAML_FILE: process.env.DCM4CHEE_YAML_FILE,
+  DCM4CHEE_POSTGRES_HOST:
+    process.env.DCM4CHEE_POSTGRES_HOST || "visionx-supabase-db.supabase",
 
   // Supabase / PostgreSQL
   SUPABASE_HOST: process.env.SUPABASE_HOST,
