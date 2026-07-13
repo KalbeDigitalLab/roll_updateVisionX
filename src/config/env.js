@@ -19,6 +19,7 @@ const env = {
   RIS_V1_YAML_FILE: process.env.RIS_V1_YAML_FILE,
   BLUE_HALO_YAML_FILE: process.env.BLUE_HALO_YAML_FILE,
   OHIF_YAML_FILE: process.env.OHIF_YAML_FILE,
+  DCM4CHEE_YAML_FILE: process.env.DCM4CHEE_YAML_FILE,
 
   // Supabase / PostgreSQL
   SUPABASE_HOST: process.env.SUPABASE_HOST,

@@ -27,9 +27,9 @@ class LocalAdapter {
    * in the given file, and returns both the line index and its content.
    * Returns null if no such line is found.
    */
-  _findFirstImageLine(lines) {
+  _findFirstImageLine(lines, startIndex = 0) {
     const imageLineRegex = /^\s*-?\s*image\s*:\s*\S+/;
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = startIndex; i < lines.length; i++) {
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith("#")) continue;
@@ -430,6 +430,263 @@ class LocalAdapter {
         consoleUtils.info(
           `${envName} already set correctly in ${remoteFilename}.`,
         );
+      }
+
+      await execCommand(`kubectl apply -f ${fullPath}`);
+      consoleUtils.success(`Deployed: ${remoteFilename}`);
+    } catch (err) {
+      consoleUtils.error(`LocalAdapter error: ${err}`);
+      throw err;
+    }
+  }
+
+  _findRisPortsBlock(lines, containerStartIndex) {
+    for (let i = containerStartIndex; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^---\s*$/.test(line.trim())) return null;
+
+      const match = line.match(/^(\s*)ports\s*:\s*$/);
+      if (match) return { index: i, indent: match[1] };
+    }
+    return null;
+  }
+
+  _findRisBlockEnd(lines, startIndex, indentLength) {
+    for (let i = startIndex + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+
+      const leadingSpaces = line.match(/^(\s*)/)[1].length;
+      if (leadingSpaces <= indentLength) return i;
+    }
+    return lines.length;
+  }
+
+  _detectRisContainerPort(lines, portsIndex, portsBlockEnd) {
+    for (let i = portsIndex + 1; i < portsBlockEnd; i++) {
+      const match = lines[i].match(/containerPort\s*:\s*(\d+)/);
+      if (match) return match[1];
+    }
+    return "3000";
+  }
+
+  async ensureRisReadinessProbe(remoteFilename) {
+    const fullPath = path.join(this.remoteBasePath, remoteFilename);
+
+    try {
+      if (!fs.existsSync(fullPath)) {
+        consoleUtils.warn(
+          `${remoteFilename} not found at ${fullPath} — nothing to update.`,
+        );
+        return;
+      }
+
+      const fileContent = fs.readFileSync(fullPath, "utf8");
+      const lines = fileContent.split(/\r?\n/);
+
+      const imageLine = this._findFirstImageLine(lines);
+      if (!imageLine) {
+        consoleUtils.warn(
+          `No container image found in ${remoteFilename} — skipping readinessProbe injection.`,
+        );
+        return;
+      }
+
+      const portsBlock = this._findRisPortsBlock(lines, imageLine.index);
+      if (!portsBlock) {
+        consoleUtils.warn(
+          `Could not find a "ports:" block in ${remoteFilename} — skipping readinessProbe injection.`,
+        );
+        return;
+      }
+
+      const indent = portsBlock.indent;
+      const portsBlockEnd = this._findRisBlockEnd(
+        lines,
+        portsBlock.index,
+        indent.length,
+      );
+      const port = this._detectRisContainerPort(
+        lines,
+        portsBlock.index,
+        portsBlockEnd,
+      );
+
+      const desiredBlock = [
+        `${indent}readinessProbe:`,
+        `${indent}  tcpSocket:`,
+        `${indent}    port: ${port}`,
+        `${indent}  initialDelaySeconds: 5`,
+        `${indent}  periodSeconds: 5`,
+      ];
+
+      let insertAt = portsBlockEnd;
+      let changed = false;
+
+      const existingProbeRegex = new RegExp(`^${indent}readinessProbe\\s*:\\s*$`);
+      const existingIndex = lines.findIndex(
+        (line, idx) => idx >= portsBlockEnd && existingProbeRegex.test(line),
+      );
+
+      if (existingIndex !== -1) {
+        const existingEnd = this._findRisBlockEnd(
+          lines,
+          existingIndex,
+          indent.length,
+        );
+        const currentBlock = lines.slice(existingIndex, existingEnd).join("\n");
+
+        if (currentBlock === desiredBlock.join("\n")) {
+          consoleUtils.info(
+            `readinessProbe already set correctly in ${remoteFilename}.`,
+          );
+        } else {
+          lines.splice(existingIndex, existingEnd - existingIndex, ...desiredBlock);
+          changed = true;
+        }
+      } else {
+        lines.splice(insertAt, 0, ...desiredBlock);
+        changed = true;
+      }
+
+      if (changed) {
+        fs.writeFileSync(fullPath, lines.join("\n"), "utf8");
+        consoleUtils.success(`Updated readinessProbe in ${remoteFilename}`);
+      }
+
+      await execCommand(`kubectl apply -f ${fullPath}`);
+      consoleUtils.success(`Deployed: ${remoteFilename}`);
+    } catch (err) {
+      consoleUtils.error(`LocalAdapter error: ${err}`);
+      throw err;
+    }
+  }
+
+  _buildDcm4cheeProbeBlock(indent, probeName, spec) {
+    const lines = [`${indent}${probeName}:`, `${indent}  httpGet:`];
+    lines.push(`${indent}    path: ${spec.path}`);
+    lines.push(`${indent}    port: ${spec.port}`);
+    for (const [key, value] of Object.entries(spec.fields)) {
+      lines.push(`${indent}  ${key}: ${value}`);
+    }
+    return lines;
+  }
+
+  async ensureDcm4cheeProbes(remoteFilename) {
+    if (!remoteFilename) {
+      consoleUtils.info(
+        "DCM4CHEE_YAML_FILE not configured — skipping (optional).",
+      );
+      return;
+    }
+
+    const fullPath = path.join(this.remoteBasePath, remoteFilename);
+
+    try {
+      if (!fs.existsSync(fullPath)) {
+        consoleUtils.warn(
+          `${remoteFilename} not found at ${fullPath} — nothing to update.`,
+        );
+        return;
+      }
+
+      const fileContent = fs.readFileSync(fullPath, "utf8");
+      let lines = fileContent.split(/\r?\n/);
+
+      const containersIndex = lines.findIndex((line) =>
+        /^(\s*)containers\s*:\s*$/.test(line),
+      );
+      if (containersIndex === -1) {
+        consoleUtils.warn(
+          `Could not find a "containers:" block in ${remoteFilename} — skipping probe injection.`,
+        );
+        return;
+      }
+
+      const imageLine = this._findFirstImageLine(lines, containersIndex);
+      if (!imageLine) {
+        consoleUtils.warn(
+          `No container image found in ${remoteFilename} — skipping probe injection.`,
+        );
+        return;
+      }
+
+      const probeSpecs = [
+        {
+          name: "startupProbe",
+          path: "/health/live",
+          port: 9990,
+          fields: { failureThreshold: 60, periodSeconds: 10, timeoutSeconds: 5 },
+        },
+        {
+          name: "readinessProbe",
+          path: "/health/ready",
+          port: 9990,
+          fields: { periodSeconds: 15, timeoutSeconds: 5, failureThreshold: 3 },
+        },
+        {
+          name: "livenessProbe",
+          path: "/health/live",
+          port: 9990,
+          fields: { periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 3 },
+        },
+      ];
+
+      let changed = false;
+
+      for (const spec of probeSpecs) {
+        const portsBlock = this._findRisPortsBlock(lines, imageLine.index);
+        if (!portsBlock) {
+          consoleUtils.warn(
+            `Could not find a "ports:" block in ${remoteFilename} — skipping remaining probe injection.`,
+          );
+          break;
+        }
+
+        const indent = portsBlock.indent;
+        const desiredBlock = this._buildDcm4cheeProbeBlock(
+          indent,
+          spec.name,
+          spec,
+        );
+
+        const probeRegex = new RegExp(`^${indent}${spec.name}\\s*:\\s*$`);
+        const existingIndex = lines.findIndex(
+          (line, idx) =>
+            idx >= imageLine.index &&
+            idx < portsBlock.index &&
+            probeRegex.test(line),
+        );
+
+        if (existingIndex !== -1) {
+          const existingEnd = this._findRisBlockEnd(
+            lines,
+            existingIndex,
+            indent.length,
+          );
+          const currentBlock = lines
+            .slice(existingIndex, existingEnd)
+            .join("\n");
+
+          if (currentBlock !== desiredBlock.join("\n")) {
+            lines.splice(
+              existingIndex,
+              existingEnd - existingIndex,
+              ...desiredBlock,
+            );
+            changed = true;
+          }
+        } else {
+          lines.splice(portsBlock.index, 0, ...desiredBlock);
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        fs.writeFileSync(fullPath, lines.join("\n"), "utf8");
+        consoleUtils.success(`Updated probes in ${remoteFilename}`);
+      } else {
+        consoleUtils.info(`Probes already set correctly in ${remoteFilename}.`);
       }
 
       await execCommand(`kubectl apply -f ${fullPath}`);
