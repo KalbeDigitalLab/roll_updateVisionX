@@ -36,12 +36,22 @@ async function runUpdateFlow(ask) {
   let runSsh, runDb, runMirth;
   let runRecount, runBackfillStarted, runMerge, runCleanMwlStatus;
   let runHelper, runDicomSend, runDeleteFhir;
-  let runSupabaseLimit, runRisDicomProxyEnv;
+  let runSupabaseLimit, runRisDicomProxyEnv, runRisReadinessProbe;
+  let runDcm4cheeProbes, runDcm4cheePostgresEnv;
 
   consoleUtils.title("Konfigurasi Proses Deployment");
   runSsh = await ask.ask("Jalankan proses Update Image? (y/n) ");
   runRisDicomProxyEnv = await ask.ask(
     "Tambahkan DICOM_PROXY_URL ke ris.yaml lalu redeploy? (y/n) ",
+  );
+  runRisReadinessProbe = await ask.ask(
+    "Tambahkan/perbarui readinessProbe (tcpSocket) ke ris.yaml & ris-v1.yaml? (y/n) ",
+  );
+  runDcm4cheeProbes = await ask.ask(
+    "Tambahkan/perbarui startup/readiness/liveness probe ke dcm4chee.yaml? (y/n) ",
+  );
+  runDcm4cheePostgresEnv = await ask.ask(
+    "Tambahkan koneksi Postgres (initContainer wait-for-postgres + env vars) ke dcm4chee.yaml? (y/n) ",
   );
   runHelper = await ask.ask("Jalankan deploy Kubernetes Helper? (y/n) ");
   runDicomSend = await ask.ask("Jalankan deploy Dicom Send Proxy? (y/n) ");
@@ -94,6 +104,35 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("RIS DICOM Proxy Env Update Completed.");
   } else {
     consoleUtils.skipped("Skipping RIS DICOM Proxy Env Update process.");
+  }
+
+  if (runRisReadinessProbe.toLowerCase() === "y") {
+    consoleUtils.section("RIS ReadinessProbe Update");
+    const local = new LocalAdapter(env);
+    await local.ensureRisReadinessProbe(env.RIS_YAML_FILE);
+    await local.ensureRisReadinessProbe(env.RIS_V1_YAML_FILE);
+    local.syncRisTemplateFromYaml(env.RIS_YAML_FILE, env.RIS_YAML_TEMPLATE_FILE);
+    consoleUtils.success("RIS ReadinessProbe Update Completed.");
+  } else {
+    consoleUtils.skipped("Skipping RIS ReadinessProbe Update process.");
+  }
+
+  if (runDcm4cheeProbes.toLowerCase() === "y") {
+    consoleUtils.section("Dcm4chee Probes Update");
+    const local = new LocalAdapter(env);
+    await local.ensureDcm4cheeProbes(env.DCM4CHEE_YAML_FILE);
+    consoleUtils.success("Dcm4chee Probes Update Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Dcm4chee Probes Update process.");
+  }
+
+  if (runDcm4cheePostgresEnv.toLowerCase() === "y") {
+    consoleUtils.section("Dcm4chee Postgres Env Update");
+    const local = new LocalAdapter(env);
+    await local.ensureDcm4cheePostgresEnv(env.DCM4CHEE_YAML_FILE);
+    consoleUtils.success("Dcm4chee Postgres Env Update Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Dcm4chee Postgres Env Update process.");
   }
 
   if (runHelper.toLowerCase() === "y") {
