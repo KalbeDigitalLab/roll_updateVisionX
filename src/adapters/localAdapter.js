@@ -428,6 +428,13 @@ class LocalAdapter {
   }
 
   async ensureRisDicomProxyEnv(remoteFilename) {
+    if (!remoteFilename) {
+      consoleUtils.info(
+        "RIS yaml file not configured — skipping (optional).",
+      );
+      return;
+    }
+
     const fullPath = path.join(this.remoteBasePath, remoteFilename);
     const envName = "DICOM_PROXY_URL";
     const siteUrl = new URL(this.config.URL);
@@ -523,6 +530,13 @@ class LocalAdapter {
   }
 
   async ensureRisReadinessProbe(remoteFilename) {
+    if (!remoteFilename) {
+      consoleUtils.info(
+        "RIS yaml file not configured — skipping (optional).",
+      );
+      return;
+    }
+
     const fullPath = path.join(this.remoteBasePath, remoteFilename);
 
     try {
