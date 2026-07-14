@@ -1,9 +1,9 @@
-﻿<channel version="4.5.2">
+<channel version="4.5.2">
   <id>c074f1b3-6c09-49b7-b4b6-9c0ee22dc133</id>
   <nextMetaDataId>20</nextMetaDataId>
   <name>mirth-vision</name>
   <description>mirth-vision-07-14-2026</description>
-  <revision>4</revision>
+  <revision>41</revision>
   <sourceConnector version="4.5.2">
     <metaDataId>0</metaDataId>
     <name>sourceConnector</name>
@@ -412,7 +412,7 @@ channelMap.put(&apos;UpdatedAccessionNumber&apos;, UpdatedAccessionNumber);</scr
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>false</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/ksf/realms/dcm4che/protocol/openid-connect/token</host>
+        <host>http://10.0.0.11/elvasoft/ksf/realms/dcm4che/protocol/openid-connect/token</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -434,13 +434,13 @@ channelMap.put(&apos;UpdatedAccessionNumber&apos;, UpdatedAccessionNumber);</scr
           <entry>
             <string>username</string>
             <list>
-              <string>KC_USERNAME_FROM_ENV</string>
+              <string>admin</string>
             </list>
           </entry>
           <entry>
             <string>password</string>
             <list>
-              <string>KC_PASSWORD_FROM_ENV</string>
+              <string>changeit</string>
             </list>
           </entry>
         </parameters>
@@ -578,7 +578,7 @@ channelMap.put(&apos;keycloak_token&apos;, resp.access_token);</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/WORKLIST/rs/mwlitems</host>
+        <host>http://10.0.0.11/dcm4chee-arc/aets/WORKLIST/rs/mwlitems</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -861,7 +861,7 @@ channelMap.put(&apos;audit_trail&apos;, JSON.stringify(trail_audit));</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/Patient</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/Patient</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1098,7 +1098,7 @@ try {
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/Patient/${patientID}</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/Patient/${patientID}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1285,7 +1285,7 @@ return isNew;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/WORKLIST/rs/mwlitems/${StudyMwl}/${spsID}/status/COMPLETED</host>
+        <host>http://10.0.0.11/dcm4chee-arc/aets/WORKLIST/rs/mwlitems/${StudyMwl}/${spsID}/status/COMPLETED</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -1447,7 +1447,7 @@ if ( noMWL == true ) {&#xd;	return false;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/ServiceRequest</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/ServiceRequest</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -2012,7 +2012,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/ImagingStudy</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -2192,7 +2192,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/ImagingStudy</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -2326,7 +2326,7 @@ function fetchById(fhirId) {
     var httpClient = null;
     var httpResponse = null;
     try {
-        var urlStr = &quot;VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy/&quot; + encodeURIComponent(fhirId);
+        var urlStr = &quot;http://10.0.0.11/elvasoft/fhir/4_0_0/ImagingStudy/&quot; + encodeURIComponent(fhirId);
         logger.info(&quot;[ConflictCheck] fetchById URL=&quot; + urlStr);
 
         var RequestConfig = org.apache.http.client.config.RequestConfig;
@@ -2527,7 +2527,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/base/rest/v1/performance</host>
+        <host>http://10.0.0.11/elvasoft/base/rest/v1/performance</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -2536,7 +2536,7 @@ return true;</script>
           <entry>
             <string>apiKey</string>
             <list>
-              <string>SUPABASE_KEY_FROM_ENV</string>
+              <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyAgCiAgICAicm9sZSI6ICJzZXJ2aWNlX3JvbGUiLAogICAgImlzcyI6ICJzdXBhYmFzZS1kZW1vIiwKICAgICJpYXQiOiAxNjQxNzY5MjAwLAogICAgImV4cCI6IDE3OTk1MzU2MDAKfQ.DaYlNEoUrrEn2Ig7tqibS-PHK5vgusbcbo7X36XVt4Q</string>
             </list>
           </entry>
           <entry>
@@ -2791,7 +2791,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/DCM4CHEE/rs/studies</host>
+        <host>http://10.0.0.11/dcm4chee-arc/aets/DCM4CHEE/rs/studies</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3082,7 +3082,7 @@ return true;</script>
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/ImagingStudy/${FhirId}</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/ImagingStudy/${FhirId}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3247,7 +3247,7 @@ if ( nostudy == true ) {&#xd;	var observation = JSON.parse($(&apos;fhir_study&ap
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/ServiceRequest/${FhirId}</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/ServiceRequest/${FhirId}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3435,7 +3435,7 @@ if ( nostudy == true &amp;&amp; noservice == true) {&#xd;	return noMWL;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_FHIR_BASE_FROM_ENV/Procedure/${FhirId}</host>
+        <host>http://10.0.0.11/elvasoft/fhir/4_0_0/Procedure/${FhirId}</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3615,7 +3615,7 @@ if ( nostudy == true &amp;&amp; noservice == true) {&#xd;	return noMWL;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/base/rest/v1/audit_log</host>
+        <host>http://10.0.0.11/elvasoft/base/rest/v1/audit_log</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3624,7 +3624,7 @@ if ( nostudy == true &amp;&amp; noservice == true) {&#xd;	return noMWL;	&#xd;
           <entry>
             <string>apiKey</string>
             <list>
-              <string>SUPABASE_KEY_FROM_ENV</string>
+              <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyAgCiAgICAicm9sZSI6ICJzZXJ2aWNlX3JvbGUiLAogICAgImlzcyI6ICJzdXBhYmFzZS1kZW1vIiwKICAgICJpYXQiOiAxNjQxNzY5MjAwLAogICAgImV4cCI6IDE3OTk1MzU2MDAKfQ.DaYlNEoUrrEn2Ig7tqibS-PHK5vgusbcbo7X36XVt4Q</string>
             </list>
           </entry>
           <entry>
@@ -3782,7 +3782,7 @@ if ( nostudy == true ) {&#xd;	return true;	&#xd;
           <queueBufferSize>1000</queueBufferSize>
           <reattachAttachments>true</reattachAttachments>
         </destinationConnectorProperties>
-        <host>VISIONX_BASE_URL_FROM_ENV/elvasoft/base/rest/v1/audit_trail</host>
+        <host>http://10.0.0.11/elvasoft/base/rest/v1/audit_trail</host>
         <useProxyServer>false</useProxyServer>
         <proxyAddress></proxyAddress>
         <proxyPort></proxyPort>
@@ -3791,7 +3791,7 @@ if ( nostudy == true ) {&#xd;	return true;	&#xd;
           <entry>
             <string>apiKey</string>
             <list>
-              <string>SUPABASE_KEY_FROM_ENV</string>
+              <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyAgCiAgICAicm9sZSI6ICJzZXJ2aWNlX3JvbGUiLAogICAgImlzcyI6ICJzdXBhYmFzZS1kZW1vIiwKICAgICJpYXQiOiAxNjQxNzY5MjAwLAogICAgImV4cCI6IDE3OTk1MzU2MDAKfQ.DaYlNEoUrrEn2Ig7tqibS-PHK5vgusbcbo7X36XVt4Q</string>
             </list>
           </entry>
           <entry>
