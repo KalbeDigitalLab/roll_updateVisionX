@@ -13,6 +13,7 @@ const increaseSupabaseLimit = require("./usecases/increaseSupabaseLimit");
 const deleteFhirByAccession = require("./cleaner/delete_fhir_by_accession");
 const AskHelper = require("./utils/readline");
 const consoleUtils = require("./utils/consoleUtils");
+const inquirer = require("inquirer");
 
 // Import cleaner
 const recountInstances = require("./cleaner/recount_instances");
@@ -33,52 +34,51 @@ async function runRisIpConfiguration(ask) {
 }
 
 async function runUpdateFlow(ask) {
-  let runSsh, runDb, runMirth;
-  let runRecount, runBackfillStarted, runMerge, runCleanMwlStatus;
-  let runHelper, runDicomSend, runDeleteFhir;
-  let runSupabaseLimit, runRisDicomProxyEnv, runRisReadinessProbe;
-  let runDcm4cheeProbes, runDcm4cheePostgresEnv;
-
   consoleUtils.title("Konfigurasi Proses Deployment");
-  runSsh = await ask.ask("Jalankan proses Update Image? (y/n) ");
-  runRisDicomProxyEnv = await ask.ask(
-    "Tambahkan DICOM_PROXY_URL ke ris.yaml lalu redeploy? (y/n) ",
-  );
-  runRisReadinessProbe = await ask.ask(
-    "Tambahkan/perbarui readinessProbe (tcpSocket) ke ris.yaml & ris-v1.yaml? (y/n) ",
-  );
-  runDcm4cheeProbes = await ask.ask(
-    "Tambahkan/perbarui startup/readiness/liveness probe ke dcm4chee.yaml? (y/n) ",
-  );
-  runDcm4cheePostgresEnv = await ask.ask(
-    "Tambahkan koneksi Postgres (initContainer wait-for-postgres + env vars) ke dcm4chee.yaml? (y/n) ",
-  );
-  runHelper = await ask.ask("Jalankan deploy Kubernetes Helper? (y/n) ");
-  runDicomSend = await ask.ask("Jalankan deploy Dicom Send Proxy? (y/n) ");
-  runDb = await ask.ask("Jalankan proses Database? (y/n) ");
-  runMirth = await ask.ask("Jalankan proses Mirth? (y/n) ");
-  runSupabaseLimit = await ask.ask(
-    "Jalankan Increase Supabase Storage Limit (values.yaml + helm upgrade)? (y/n) ",
-  );
 
-  consoleUtils.section("Tool Cleaner Bila Diperlukan");
-  consoleUtils.info(
-    "Langkah di bawah biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
-  );
+  const { selectedTasks } = await inquirer.prompt([
+    {
+      type: "checkbox",
+      name: "selectedTasks",
+      message: "Pilih proses yang ingin dijalankan (spasi untuk memilih, enter untuk konfirmasi):",
+      pageSize: 20,
+      choices: [
+        new inquirer.Separator("-- Deployment --"),
+        { name: "Update Image", value: "image" },
+        { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
+        { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
+        { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
+        { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
+        { name: "Deploy Kubernetes Helper", value: "helper" },
+        { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
+        { name: "Update Database", value: "db" },
+        { name: "Update Mirth Channel", value: "mirth" },
+        { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+        new inquirer.Separator("-- Tool Cleaner (biasanya hanya untuk instalasi lama / perbaikan data) --"),
+        { name: "Cleaner: Recount Instances", value: "recount" },
+        { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
+        { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
+        { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
+        { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
+      ],
+    },
+  ]);
 
-  runRecount = await ask.ask(
-    "Jalankan proses Cleaner (Recount Instances)? (y/n) ",
-  );
-  runBackfillStarted = await ask.ask(
-    "Jalankan proses Cleaner (Backfill ImagingStudy.started dari DICOM)? (y/n) ",
-  );
-  runMerge = await ask.ask(
-    "Jalankan proses Cleaner (Patient Merge LENGKAP - PACS & DB)? (y/n) ",
-  );
-  runCleanMwlStatus = await ask.ask("You want to Clean MWL Status? (y/n) ");
-  runDeleteFhir = await ask.ask(
-    "Jalankan tool Delete FHIR by Accession? (y/n) ",
-  );
+  const runSsh = selectedTasks.includes("image") ? "y" : "n";
+  const runRisDicomProxyEnv = selectedTasks.includes("risDicomProxyEnv") ? "y" : "n";
+  const runRisReadinessProbe = selectedTasks.includes("risReadinessProbe") ? "y" : "n";
+  const runDcm4cheeProbes = selectedTasks.includes("dcm4cheeProbes") ? "y" : "n";
+  const runDcm4cheePostgresEnv = selectedTasks.includes("dcm4cheePostgresEnv") ? "y" : "n";
+  const runHelper = selectedTasks.includes("helper") ? "y" : "n";
+  const runDicomSend = selectedTasks.includes("dicomSend") ? "y" : "n";
+  const runDb = selectedTasks.includes("db") ? "y" : "n";
+  const runMirth = selectedTasks.includes("mirth") ? "y" : "n";
+  const runSupabaseLimit = selectedTasks.includes("supabaseLimit") ? "y" : "n";
+  const runRecount = selectedTasks.includes("recount") ? "y" : "n";
+  const runBackfillStarted = selectedTasks.includes("backfillStarted") ? "y" : "n";
+  const runMerge = selectedTasks.includes("patientMerge") ? "y" : "n";
+  const runCleanMwlStatus = selectedTasks.includes("cleanMwlStatus") ? "y" : "n";
+  const runDeleteFhir = selectedTasks.includes("deleteFhir") ? "y" : "n";
 
   consoleUtils.section("Proses Status");
   consoleUtils.info("Menjalankan proses sesuai opsi yang dipilih.");
