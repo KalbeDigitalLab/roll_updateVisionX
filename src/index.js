@@ -41,14 +41,14 @@ async function runUpdateFlow(ask) {
   // ask.ask() calls stop receiving input once inquirer is done with it.
   ask.close();
 
-  const { selectedTasks } = await inquirer.prompt([
+  const { deploymentTasks } = await inquirer.prompt([
     {
       type: "checkbox",
-      name: "selectedTasks",
-      message: "Pilih proses yang ingin dijalankan (spasi untuk memilih, enter untuk konfirmasi):",
+      name: "deploymentTasks",
+      message:
+        'Pilih proses Deployment (spasi pilih, "a" pilih semua, enter lanjut):',
       pageSize: 20,
       choices: [
-        new inquirer.Separator("-- Deployment --"),
         { name: "Update Image", value: "image" },
         { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
         { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
@@ -59,7 +59,22 @@ async function runUpdateFlow(ask) {
         { name: "Update Database", value: "db" },
         { name: "Update Mirth Channel", value: "mirth" },
         { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
-        new inquirer.Separator("-- Tool Cleaner (biasanya hanya untuk instalasi lama / perbaikan data) --"),
+      ],
+    },
+  ]);
+
+  consoleUtils.info(
+    "Langkah cleaner biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
+  );
+
+  const { cleanerTasks } = await inquirer.prompt([
+    {
+      type: "checkbox",
+      name: "cleanerTasks",
+      message:
+        'Pilih Tool Cleaner (spasi pilih, "a" pilih semua, enter konfirmasi):',
+      pageSize: 20,
+      choices: [
         { name: "Cleaner: Recount Instances", value: "recount" },
         { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
         { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
@@ -68,6 +83,8 @@ async function runUpdateFlow(ask) {
       ],
     },
   ]);
+
+  const selectedTasks = [...deploymentTasks, ...cleanerTasks];
 
   const runSsh = selectedTasks.includes("image") ? "y" : "n";
   const runRisDicomProxyEnv = selectedTasks.includes("risDicomProxyEnv") ? "y" : "n";
