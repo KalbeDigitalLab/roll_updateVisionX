@@ -41,48 +41,74 @@ async function runUpdateFlow(ask) {
   // ask.ask() calls stop receiving input once inquirer is done with it.
   ask.close();
 
-  const { deploymentTasks } = await inquirer.prompt([
+  const { category } = await inquirer.prompt([
     {
-      type: "checkbox",
-      name: "deploymentTasks",
-      message:
-        'Pilih proses Deployment (spasi pilih, "a" pilih semua, enter lanjut):',
-      pageSize: 20,
+      type: "list",
+      name: "category",
+      message: "Pilih kategori proses:",
       choices: [
-        { name: "Update Image", value: "image" },
-        { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
-        { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
-        { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
-        { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
-        { name: "Deploy Kubernetes Helper", value: "helper" },
-        { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
-        { name: "Update Database", value: "db" },
-        { name: "Update Mirth Channel", value: "mirth" },
-        { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+        { name: "Deployment", value: "deployment" },
+        { name: "Tool Cleaner", value: "cleaner" },
+        { name: "Keduanya (Deployment & Tool Cleaner)", value: "both" },
+        new inquirer.Separator(),
+        { name: "Kembali ke Menu Utama", value: "back" },
       ],
     },
   ]);
 
-  consoleUtils.info(
-    "Langkah cleaner biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
-  );
+  if (category === "back") {
+    return new AskHelper();
+  }
 
-  const { cleanerTasks } = await inquirer.prompt([
-    {
-      type: "checkbox",
-      name: "cleanerTasks",
-      message:
-        'Pilih Tool Cleaner (spasi pilih, "a" pilih semua, enter konfirmasi):',
-      pageSize: 20,
-      choices: [
-        { name: "Cleaner: Recount Instances", value: "recount" },
-        { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
-        { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
-        { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
-        { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
-      ],
-    },
-  ]);
+  let deploymentTasks = [];
+  let cleanerTasks = [];
+
+  if (category === "deployment" || category === "both") {
+    ({ deploymentTasks } = await inquirer.prompt([
+      {
+        type: "checkbox",
+        name: "deploymentTasks",
+        message:
+          'Pilih proses Deployment (spasi pilih, "a" pilih semua, enter lanjut):',
+        pageSize: 20,
+        choices: [
+          { name: "Update Image", value: "image" },
+          { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
+          { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
+          { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
+          { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
+          { name: "Deploy Kubernetes Helper", value: "helper" },
+          { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
+          { name: "Update Database", value: "db" },
+          { name: "Update Mirth Channel", value: "mirth" },
+          { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+        ],
+      },
+    ]));
+  }
+
+  if (category === "cleaner" || category === "both") {
+    consoleUtils.info(
+      "Langkah cleaner biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
+    );
+
+    ({ cleanerTasks } = await inquirer.prompt([
+      {
+        type: "checkbox",
+        name: "cleanerTasks",
+        message:
+          'Pilih Tool Cleaner (spasi pilih, "a" pilih semua, enter konfirmasi):',
+        pageSize: 20,
+        choices: [
+          { name: "Cleaner: Recount Instances", value: "recount" },
+          { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
+          { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
+          { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
+          { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
+        ],
+      },
+    ]));
+  }
 
   const selectedTasks = [...deploymentTasks, ...cleanerTasks];
 
