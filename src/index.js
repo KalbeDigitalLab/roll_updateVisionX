@@ -36,6 +36,11 @@ async function runRisIpConfiguration(ask) {
 async function runUpdateFlow(ask) {
   consoleUtils.title("Konfigurasi Proses Deployment");
 
+  // inquirer's checkbox prompt takes over stdin's raw mode; the existing
+  // readline-based AskHelper must release stdin first or its later
+  // ask.ask() calls stop receiving input once inquirer is done with it.
+  ask.close();
+
   const { selectedTasks } = await inquirer.prompt([
     {
       type: "checkbox",
@@ -82,6 +87,10 @@ async function runUpdateFlow(ask) {
 
   consoleUtils.section("Proses Status");
   consoleUtils.info("Menjalankan proses sesuai opsi yang dipilih.");
+
+  // Fresh readline interface for any y/n / text prompts still needed below
+  // (image version, deploy confirmations, etc.) now that inquirer is done.
+  ask = new AskHelper();
 
   if (runSsh.toLowerCase() === "y") {
     consoleUtils.section("Update Image Process (No SSH)");
@@ -253,27 +262,32 @@ async function runUpdateFlow(ask) {
   }
 
   consoleUtils.success("All requested deployments completed!");
+  return ask;
 }
 
 async function main() {
-  const ask = new AskHelper();
+  let ask = new AskHelper();
 
   try {
-    consoleUtils.title("VisionX Roll Updater");
-    console.log("1. Lakukan Update");
-    console.log("2. Konfigurasi IP (Deploy.sh)");
-    console.log("3. Exit");
+    let exit = false;
+    while (!exit) {
+      consoleUtils.title("VisionX Roll Updater");
+      console.log("1. Lakukan Update");
+      console.log("2. Konfigurasi IP (Deploy.sh)");
+      console.log("3. Exit");
 
-    const menuChoice = (await ask.ask("Pilih menu (1/2/3): ")).trim();
+      const menuChoice = (await ask.ask("Pilih menu (1/2/3): ")).trim();
 
-    if (menuChoice === "1") {
-      await runUpdateFlow(ask);
-    } else if (menuChoice === "2") {
-      await runRisIpConfiguration(ask);
-    } else if (menuChoice === "3") {
-      consoleUtils.info("Keluar dari program.");
-    } else {
-      consoleUtils.warn(`Pilihan tidak valid: ${menuChoice}`);
+      if (menuChoice === "1") {
+        ask = await runUpdateFlow(ask);
+      } else if (menuChoice === "2") {
+        await runRisIpConfiguration(ask);
+      } else if (menuChoice === "3") {
+        consoleUtils.info("Keluar dari program.");
+        exit = true;
+      } else {
+        consoleUtils.warn(`Pilihan tidak valid: ${menuChoice}`);
+      }
     }
   } catch (err) {
     consoleUtils.error(`Error saat eksekusi proses: ${err.message}`);
