@@ -35,6 +35,11 @@ async function deployYamlFiles(adapter, config, askHelper) {
       version: config.OHIF_IMAGE_VERSION,
       optional: false,
     },
+    {
+      remote: config.ELVASOFT_DICOM_PROXY_YAML_FILE,
+      version: config.ELVASOFT_DICOM_PROXY_IMAGE_VERSION,
+      optional: true,
+    },
   ];
 
   for (const file of yamlFiles) {

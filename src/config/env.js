@@ -12,6 +12,8 @@ const env = {
   RIS_V1_IMAGE_VERSION: process.env.RIS_V1_IMAGE_VERSION,
   BLUE_HALO_IMAGE_VERSION: process.env.BLUE_HALO_IMAGE_VERSION,
   OHIF_IMAGE_VERSION: process.env.OHIF_IMAGE_VERSION,
+  ELVASOFT_DICOM_PROXY_IMAGE_VERSION:
+    process.env.ELVASOFT_DICOM_PROXY_IMAGE_VERSION,
 
   // Yaml Files
   RIS_YAML_FILE: process.env.RIS_YAML_FILE,
@@ -19,6 +21,9 @@ const env = {
   RIS_V1_YAML_FILE: process.env.RIS_V1_YAML_FILE,
   BLUE_HALO_YAML_FILE: process.env.BLUE_HALO_YAML_FILE,
   OHIF_YAML_FILE: process.env.OHIF_YAML_FILE,
+  ELVASOFT_DICOM_PROXY_YAML_FILE:
+    process.env.ELVASOFT_DICOM_PROXY_YAML_FILE ||
+    "13-elvasoft-dicom-proxy.yaml",
   DCM4CHEE_YAML_FILE: process.env.DCM4CHEE_YAML_FILE,
   DCM4CHEE_POSTGRES_HOST:
     process.env.DCM4CHEE_POSTGRES_HOST || "visionx-supabase-db.supabase",
