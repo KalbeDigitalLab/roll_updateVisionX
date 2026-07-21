@@ -13,6 +13,7 @@ const increaseSupabaseLimit = require("./usecases/increaseSupabaseLimit");
 const deleteFhirByAccession = require("./cleaner/delete_fhir_by_accession");
 const AskHelper = require("./utils/readline");
 const consoleUtils = require("./utils/consoleUtils");
+const inquirer = require("inquirer");
 
 // Import cleaner
 const recountInstances = require("./cleaner/recount_instances");
@@ -33,55 +34,106 @@ async function runRisIpConfiguration(ask) {
 }
 
 async function runUpdateFlow(ask) {
-  let runSsh, runDb, runMirth;
-  let runRecount, runBackfillStarted, runMerge, runCleanMwlStatus;
-  let runHelper, runDicomSend, runDeleteFhir;
-  let runSupabaseLimit, runRisDicomProxyEnv, runRisReadinessProbe;
-  let runDcm4cheeProbes, runDcm4cheePostgresEnv;
-
   consoleUtils.title("Konfigurasi Proses Deployment");
-  runSsh = await ask.ask("Jalankan proses Update Image? (y/n) ");
-  runRisDicomProxyEnv = await ask.ask(
-    "Tambahkan DICOM_PROXY_URL ke ris.yaml lalu redeploy? (y/n) ",
-  );
-  runRisReadinessProbe = await ask.ask(
-    "Tambahkan/perbarui readinessProbe (tcpSocket) ke ris.yaml & ris-v1.yaml? (y/n) ",
-  );
-  runDcm4cheeProbes = await ask.ask(
-    "Tambahkan/perbarui startup/readiness/liveness probe ke dcm4chee.yaml? (y/n) ",
-  );
-  runDcm4cheePostgresEnv = await ask.ask(
-    "Tambahkan koneksi Postgres (initContainer wait-for-postgres + env vars) ke dcm4chee.yaml? (y/n) ",
-  );
-  runHelper = await ask.ask("Jalankan deploy Kubernetes Helper? (y/n) ");
-  runDicomSend = await ask.ask("Jalankan deploy Dicom Send Proxy? (y/n) ");
-  runDb = await ask.ask("Jalankan proses Database? (y/n) ");
-  runMirth = await ask.ask("Jalankan proses Mirth? (y/n) ");
-  runSupabaseLimit = await ask.ask(
-    "Jalankan Increase Supabase Storage Limit (values.yaml + helm upgrade)? (y/n) ",
-  );
 
-  consoleUtils.section("Tool Cleaner Bila Diperlukan");
-  consoleUtils.info(
-    "Langkah di bawah biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
-  );
+  // inquirer's checkbox prompt takes over stdin's raw mode; the existing
+  // readline-based AskHelper must release stdin first or its later
+  // ask.ask() calls stop receiving input once inquirer is done with it.
+  ask.close();
 
-  runRecount = await ask.ask(
-    "Jalankan proses Cleaner (Recount Instances)? (y/n) ",
-  );
-  runBackfillStarted = await ask.ask(
-    "Jalankan proses Cleaner (Backfill ImagingStudy.started dari DICOM)? (y/n) ",
-  );
-  runMerge = await ask.ask(
-    "Jalankan proses Cleaner (Patient Merge LENGKAP - PACS & DB)? (y/n) ",
-  );
-  runCleanMwlStatus = await ask.ask("You want to Clean MWL Status? (y/n) ");
-  runDeleteFhir = await ask.ask(
-    "Jalankan tool Delete FHIR by Accession? (y/n) ",
-  );
+  const { category } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "category",
+      message: "Pilih kategori proses:",
+      choices: [
+        { name: "Deployment", value: "deployment" },
+        { name: "Tool Cleaner", value: "cleaner" },
+        { name: "Keduanya (Deployment & Tool Cleaner)", value: "both" },
+        new inquirer.Separator(),
+        { name: "Kembali ke Menu Utama", value: "back" },
+      ],
+    },
+  ]);
+
+  if (category === "back") {
+    return new AskHelper();
+  }
+
+  let deploymentTasks = [];
+  let cleanerTasks = [];
+
+  if (category === "deployment" || category === "both") {
+    ({ deploymentTasks } = await inquirer.prompt([
+      {
+        type: "checkbox",
+        name: "deploymentTasks",
+        message:
+          'Pilih proses Deployment (spasi pilih, "a" pilih semua, enter lanjut):',
+        pageSize: 20,
+        choices: [
+          { name: "Update Image", value: "image" },
+          { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
+          { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
+          { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
+          { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
+          { name: "Deploy Kubernetes Helper", value: "helper" },
+          { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
+          { name: "Update Database", value: "db" },
+          { name: "Update Mirth Channel", value: "mirth" },
+          { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+        ],
+      },
+    ]));
+  }
+
+  if (category === "cleaner" || category === "both") {
+    consoleUtils.info(
+      "Langkah cleaner biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
+    );
+
+    ({ cleanerTasks } = await inquirer.prompt([
+      {
+        type: "checkbox",
+        name: "cleanerTasks",
+        message:
+          'Pilih Tool Cleaner (spasi pilih, "a" pilih semua, enter konfirmasi):',
+        pageSize: 20,
+        choices: [
+          { name: "Cleaner: Recount Instances", value: "recount" },
+          { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
+          { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
+          { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
+          { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
+        ],
+      },
+    ]));
+  }
+
+  const selectedTasks = [...deploymentTasks, ...cleanerTasks];
+
+  const runSsh = selectedTasks.includes("image") ? "y" : "n";
+  const runRisDicomProxyEnv = selectedTasks.includes("risDicomProxyEnv") ? "y" : "n";
+  const runRisReadinessProbe = selectedTasks.includes("risReadinessProbe") ? "y" : "n";
+  const runDcm4cheeProbes = selectedTasks.includes("dcm4cheeProbes") ? "y" : "n";
+  const runDcm4cheePostgresEnv = selectedTasks.includes("dcm4cheePostgresEnv") ? "y" : "n";
+  const runHelper = selectedTasks.includes("helper") ? "y" : "n";
+  const runDicomSend = selectedTasks.includes("dicomSend") ? "y" : "n";
+  const runDb = selectedTasks.includes("db") ? "y" : "n";
+  const runMirth = selectedTasks.includes("mirth") ? "y" : "n";
+  const runSupabaseLimit = selectedTasks.includes("supabaseLimit") ? "y" : "n";
+  const runRecount = selectedTasks.includes("recount") ? "y" : "n";
+  const runBackfillStarted = selectedTasks.includes("backfillStarted") ? "y" : "n";
+  const runMerge = selectedTasks.includes("patientMerge") ? "y" : "n";
+  const runCleanMwlStatus = selectedTasks.includes("cleanMwlStatus") ? "y" : "n";
+  const runDeleteFhir = selectedTasks.includes("deleteFhir") ? "y" : "n";
 
   consoleUtils.section("Proses Status");
   consoleUtils.info("Menjalankan proses sesuai opsi yang dipilih.");
+
+  // Fresh readline interface for any y/n / text prompts still needed below
+  // (image version, deploy confirmations, etc.) now that inquirer is done.
+  ask = new AskHelper();
 
   if (runSsh.toLowerCase() === "y") {
     consoleUtils.section("Update Image Process (No SSH)");
@@ -253,27 +305,32 @@ async function runUpdateFlow(ask) {
   }
 
   consoleUtils.success("All requested deployments completed!");
+  return ask;
 }
 
 async function main() {
-  const ask = new AskHelper();
+  let ask = new AskHelper();
 
   try {
-    consoleUtils.title("VisionX Roll Updater");
-    console.log("1. Lakukan Update");
-    console.log("2. Konfigurasi IP (Deploy.sh)");
-    console.log("3. Exit");
+    let exit = false;
+    while (!exit) {
+      consoleUtils.title("VisionX Roll Updater");
+      console.log("1. Lakukan Update");
+      console.log("2. Konfigurasi IP (Deploy.sh)");
+      console.log("3. Exit");
 
-    const menuChoice = (await ask.ask("Pilih menu (1/2/3): ")).trim();
+      const menuChoice = (await ask.ask("Pilih menu (1/2/3): ")).trim();
 
-    if (menuChoice === "1") {
-      await runUpdateFlow(ask);
-    } else if (menuChoice === "2") {
-      await runRisIpConfiguration(ask);
-    } else if (menuChoice === "3") {
-      consoleUtils.info("Keluar dari program.");
-    } else {
-      consoleUtils.warn(`Pilihan tidak valid: ${menuChoice}`);
+      if (menuChoice === "1") {
+        ask = await runUpdateFlow(ask);
+      } else if (menuChoice === "2") {
+        await runRisIpConfiguration(ask);
+      } else if (menuChoice === "3") {
+        consoleUtils.info("Keluar dari program.");
+        exit = true;
+      } else {
+        consoleUtils.warn(`Pilihan tidak valid: ${menuChoice}`);
+      }
     }
   } catch (err) {
     consoleUtils.error(`Error saat eksekusi proses: ${err.message}`);
