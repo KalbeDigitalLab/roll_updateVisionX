@@ -3,12 +3,20 @@ const consoleUtils = require("../utils/consoleUtils");
 
 /**
  * Applies the Supabase chart hardening (strategy: Recreate for db, plus
- * startup/readiness/liveness probes for 12 components) that was validated
- * on the staging VM and is committed in the chart repo at
+ * startup/readiness/liveness probes for 12 components) to the chart at
  * SUPABASE_CHART_DIR. Unlike increaseSupabaseLimit.js (a pure values.yaml
  * patch, no downtime), this triggers a brief db pod restart via Recreate,
  * so it requires an explicit operator confirmation and fails loudly on any
  * problem rather than swallowing errors.
+ *
+ * There is no shared internal fork of the chart to pull the hardening
+ * from — SUPABASE_CHART_DIR is a clone of the public
+ * supabase-community/supabase-kubernetes repo, and the hardening is
+ * applied by hand-editing files directly on each site's VM. So this does
+ * NOT git pull/fetch anything; it trusts whatever's currently on disk and
+ * only requires it to be committed locally first (a clean working tree),
+ * so each site keeps its own git history/rollback point for what was
+ * actually applied.
  *
  * Pre-flight checks specifically guard against the incident this hardening
  * itself must not reproduce: Realtime's readinessProbe hitting `httpGet
@@ -117,19 +125,8 @@ async function hardenSupabaseChart(askHelper) {
   }).toString();
   if (dirtyStatus.trim().length > 0) {
     throw new Error(
-      `${chartDir} has uncommitted changes — commit, stash, or discard them manually before running this step:\n${dirtyStatus}`,
+      `${chartDir} has uncommitted changes — commit (or discard) them manually first, so this site's git history has a clear record of exactly what's being applied:\n${dirtyStatus}`,
     );
-  }
-
-  try {
-    consoleUtils.info("Fetching latest chart from origin...");
-    execSync("git fetch origin", { cwd: chartDir, stdio: "inherit" });
-    execSync("git pull --ff-only origin main", {
-      cwd: chartDir,
-      stdio: "inherit",
-    });
-  } catch (err) {
-    throw new Error(`Failed to sync chart repo (git pull --ff-only): ${err.message}`);
   }
 
   consoleUtils.info("Running helm lint...");
