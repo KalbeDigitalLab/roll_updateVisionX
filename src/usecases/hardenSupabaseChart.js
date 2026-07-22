@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const { execSync } = require("child_process");
 const consoleUtils = require("../utils/consoleUtils");
 
@@ -67,6 +69,39 @@ const PROBE_EXPECTATIONS = {
   functions: { startupProbe: false, livenessProbe: false, readinessProbe: true },
 };
 
+// db must never rolling-update — that's the actual root cause fix (see
+// supabase-db-wal-corruption-incident doc: overlapping old/new db pods
+// during a RollingUpdate both wrote WAL to the same hostPath, corrupting
+// the checkpoint record). Hardcoded directly rather than gated behind a
+// values key, so it can't be silently missed by a values.yaml that wasn't
+// fully updated on a given site (exactly what happened here — the manual
+// hardening pass added probes but missed this).
+function ensureDbRecreateStrategy(chartDir) {
+  const deploymentPath = path.join(chartDir, "templates", "db", "deployment.yaml");
+  if (!fs.existsSync(deploymentPath)) {
+    consoleUtils.warn(`${deploymentPath} not found — skipping strategy: Recreate injection.`);
+    return;
+  }
+
+  const content = fs.readFileSync(deploymentPath, "utf8");
+  if (/strategy:\s*\n\s*type:\s*Recreate/.test(content)) {
+    consoleUtils.info("db deployment already has strategy: Recreate.");
+    return;
+  }
+
+  const lines = content.split(/\r?\n/);
+  const selectorIndex = lines.findIndex((line) => /^ {2}selector:\s*$/.test(line));
+  if (selectorIndex === -1) {
+    throw new Error(
+      `Could not find "  selector:" in ${deploymentPath} to anchor the strategy: Recreate injection — add it manually as a sibling of replicas:/selector:/template: under the Deployment's spec:.`,
+    );
+  }
+
+  lines.splice(selectorIndex, 0, "  strategy:", "    type: Recreate");
+  fs.writeFileSync(deploymentPath, lines.join("\n"), "utf8");
+  consoleUtils.success(`Injected strategy: Recreate into ${deploymentPath}`);
+}
+
 function checkProbeCoverage(rendered) {
   const mismatches = [];
 
@@ -102,6 +137,8 @@ async function hardenSupabaseChart(askHelper) {
   }
 
   consoleUtils.info(`Using Supabase chart at: ${chartDir}`);
+
+  ensureDbRecreateStrategy(chartDir);
 
   consoleUtils.info("Running helm lint...");
   execSync("helm lint .", { cwd: chartDir, stdio: "inherit" });
