@@ -216,8 +216,9 @@ function buildProbeBlock(probeName, port) {
 // practice. Normalizes both to periodSeconds: 60 across all 12 components.
 // startupProbe is deliberately left untouched — it only runs once during
 // boot, and its faster cadence is what lets a slow-starting component
-// (e.g. db, up to a 10-minute window) actually reach ready within its
-// failureThreshold instead of wasting most of that window between checks.
+// (e.g. db, see ensureDbStartupProbeWindow below) actually reach ready
+// within its failureThreshold instead of wasting most of that window
+// between checks.
 function ensureSteadyStateProbePeriod(chartDir) {
   const valuesPath = path.join(chartDir, "values.example.yaml");
   if (!fs.existsSync(valuesPath)) {
@@ -249,6 +250,56 @@ function ensureSteadyStateProbePeriod(chartDir) {
           consoleUtils.success(`Set ${component}.${probeName}.periodSeconds to 60 in values.example.yaml`);
         }
       }
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  return changed;
+}
+
+// db's startupProbe window (failureThreshold * periodSeconds, plus
+// initialDelaySeconds) shipped at ~10 minutes, too tight for a slow
+// crash-recovery boot. Doubles failureThreshold to 120, giving ~20
+// minutes — matched to the `helm upgrade --timeout 20m` already used
+// below, since a longer startup window than the upgrade itself will wait
+// for wouldn't help. periodSeconds stays at 10s: the check frequency
+// during boot was already fine, it's the ceiling that was short.
+const DB_STARTUP_FAILURE_THRESHOLD = 120;
+
+function ensureDbStartupProbeWindow(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) {
+    consoleUtils.warn(`${valuesPath} not found — skipping db startupProbe window extension.`);
+    return false;
+  }
+
+  const lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  const section = findComponentSection(lines, "db");
+  if (!section) {
+    consoleUtils.warn(`Could not find "db:" section in ${valuesPath} — skipping db startupProbe window extension.`);
+    return false;
+  }
+
+  const blockStart = lines
+    .slice(section.startIndex, section.endIndex)
+    .findIndex((line) => /^ {2}startupProbe:\s*$/.test(line));
+  if (blockStart === -1) {
+    consoleUtils.warn(`db has no startupProbe block in ${valuesPath} — skipping window extension.`);
+    return false;
+  }
+
+  const absoluteStart = section.startIndex + blockStart;
+  const blockEnd = findProbeBlockEnd(lines, absoluteStart, section.endIndex);
+
+  let changed = false;
+  for (let i = absoluteStart + 1; i < blockEnd; i++) {
+    const match = lines[i].match(/^(\s*)failureThreshold:\s*(\d+)\s*$/);
+    if (match && Number(match[2]) < DB_STARTUP_FAILURE_THRESHOLD) {
+      lines[i] = `${match[1]}failureThreshold: ${DB_STARTUP_FAILURE_THRESHOLD}`;
+      changed = true;
+      consoleUtils.success(`Set db.startupProbe.failureThreshold to ${DB_STARTUP_FAILURE_THRESHOLD} (~20min window) in values.example.yaml`);
     }
   }
 
@@ -460,6 +511,7 @@ async function hardenSupabaseChart(askHelper) {
   ensureDbRecreateStrategy(chartDir);
   ensureRealtimeReadinessProbe(chartDir);
   ensureSteadyStateProbePeriod(chartDir);
+  ensureDbStartupProbeWindow(chartDir);
 
   consoleUtils.info("Running helm lint...");
   execSync("helm lint .", { cwd: chartDir, stdio: "inherit" });
