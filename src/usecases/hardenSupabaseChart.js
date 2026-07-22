@@ -97,6 +97,15 @@ async function hardenSupabaseChart(askHelper) {
 
   consoleUtils.info(`Using Supabase chart at: ${chartDir}`);
 
+  // The chart dir is typically owned by a deploy user (e.g. klbfadmin) while
+  // this tool commonly runs as root — git refuses to touch a repo it
+  // doesn't consider "safe" in that case. Register the exception up front
+  // so every site doesn't have to hit the error once and fix it manually.
+  execSync(`git config --global --add safe.directory ${chartDir}`, {
+    cwd: chartDir,
+    stdio: "inherit",
+  });
+
   const dirtyStatus = execSync("git status --porcelain", {
     cwd: chartDir,
   }).toString();
