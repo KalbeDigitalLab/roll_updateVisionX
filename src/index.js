@@ -10,6 +10,7 @@ const updateMirthChannel = require("./usecases/updateMirthChannel");
 const deployHelper = require("./usecases/deployHelper");
 const deployDicomSend = require("./usecases/deployDicomSend");
 const increaseSupabaseLimit = require("./usecases/increaseSupabaseLimit");
+const hardenSupabaseChart = require("./usecases/hardenSupabaseChart");
 const deleteFhirByAccession = require("./cleaner/delete_fhir_by_accession");
 const AskHelper = require("./utils/readline");
 const consoleUtils = require("./utils/consoleUtils");
@@ -82,6 +83,7 @@ async function runUpdateFlow(ask) {
           { name: "Update Database", value: "db" },
           { name: "Update Mirth Channel", value: "mirth" },
           { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+          { name: "Harden Supabase Chart (Recreate + Probes)", value: "hardenSupabaseChart" },
         ],
       },
     ]));
@@ -122,6 +124,7 @@ async function runUpdateFlow(ask) {
   const runDb = selectedTasks.includes("db") ? "y" : "n";
   const runMirth = selectedTasks.includes("mirth") ? "y" : "n";
   const runSupabaseLimit = selectedTasks.includes("supabaseLimit") ? "y" : "n";
+  const runHardenSupabaseChart = selectedTasks.includes("hardenSupabaseChart") ? "y" : "n";
   const runRecount = selectedTasks.includes("recount") ? "y" : "n";
   const runBackfillStarted = selectedTasks.includes("backfillStarted") ? "y" : "n";
   const runMerge = selectedTasks.includes("patientMerge") ? "y" : "n";
@@ -231,6 +234,14 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("Supabase Storage Limit Process Completed.");
   } else {
     consoleUtils.skipped("Skipping Supabase Storage Limit process.");
+  }
+
+  if (runHardenSupabaseChart.toLowerCase() === "y") {
+    consoleUtils.section("Harden Supabase Chart (Recreate + Probes)");
+    await hardenSupabaseChart(ask);
+    consoleUtils.success("Harden Supabase Chart Process Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Harden Supabase Chart process.");
   }
 
   if (runRecount.toLowerCase() === "y") {

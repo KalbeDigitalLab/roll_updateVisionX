@@ -52,6 +52,13 @@ async function deployYamlFiles(adapter, config, askHelper) {
       optional: file.optional,
     });
 
+    if (file.remote === config.RIS_YAML_FILE || file.remote === config.RIS_V1_YAML_FILE) {
+      consoleUtils.warn(
+        `Automatically checking/adding readinessProbe in ${file.remote} (tcpSocket probe on the detected container port). Existing readinessProbe blocks are left untouched if already present.`,
+      );
+      await adapter.ensureRisReadinessProbe(file.remote);
+    }
+
     if (file.remote === config.RIS_YAML_FILE) {
       adapter.syncRisTemplateFromYaml(
         config.RIS_YAML_FILE,
