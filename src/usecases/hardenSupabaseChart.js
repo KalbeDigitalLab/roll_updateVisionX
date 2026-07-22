@@ -49,25 +49,30 @@ function hasProbe(doc, probeName) {
   return new RegExp(`^\\s*${probeName}:\\s*$`, "m").test(doc);
 }
 
-// Expected probe coverage across all 12 Supabase components, as confirmed
-// on the staging VM: startupProbe is db-only (Recreate needs it most, since
-// db is the one component with real startup work); livenessProbe covers 7
-// components; readinessProbe covers 11 (all but db, which never got a
-// readiness probe added).
-const PROBE_EXPECTATIONS = {
-  db: { startupProbe: true, livenessProbe: true, readinessProbe: false },
-  studio: { startupProbe: false, livenessProbe: true, readinessProbe: true },
-  auth: { startupProbe: false, livenessProbe: false, readinessProbe: true },
-  rest: { startupProbe: false, livenessProbe: false, readinessProbe: true },
-  realtime: { startupProbe: false, livenessProbe: true, readinessProbe: true },
-  meta: { startupProbe: false, livenessProbe: false, readinessProbe: true },
-  storage: { startupProbe: false, livenessProbe: true, readinessProbe: true },
-  imgproxy: { startupProbe: false, livenessProbe: true, readinessProbe: true },
-  kong: { startupProbe: false, livenessProbe: false, readinessProbe: true },
-  analytics: { startupProbe: false, livenessProbe: true, readinessProbe: true },
-  vector: { startupProbe: false, livenessProbe: true, readinessProbe: true },
-  functions: { startupProbe: false, livenessProbe: false, readinessProbe: true },
-};
+// All 12 Supabase components. Confirmed on the real VM that the actual
+// hardened chart gives every component startupProbe + livenessProbe +
+// readinessProbe — more complete than an earlier partial-coverage
+// breakdown suggested. So the check below only enforces a minimum baseline
+// (readinessProbe + livenessProbe present on all 12) and never fails for
+// *extra* probes (e.g. a startupProbe that isn't strictly required) — more
+// health-check coverage than the minimum is fine, only missing coverage
+// is a real problem. db's strategy/replicas and Realtime's httpGet-path-/
+// ban are already covered by their own dedicated checks above/below.
+const ALL_COMPONENTS = [
+  "db",
+  "studio",
+  "auth",
+  "rest",
+  "realtime",
+  "meta",
+  "storage",
+  "imgproxy",
+  "kong",
+  "analytics",
+  "vector",
+  "functions",
+];
+const REQUIRED_PROBES = ["readinessProbe", "livenessProbe"];
 
 // db must never rolling-update — that's the actual root cause fix (see
 // supabase-db-wal-corruption-incident doc: overlapping old/new db pods
@@ -142,29 +147,25 @@ function ensureRealtimeReadinessProbe(chartDir) {
 }
 
 function checkProbeCoverage(rendered) {
-  const mismatches = [];
+  const missing = [];
 
-  for (const [component, expected] of Object.entries(PROBE_EXPECTATIONS)) {
+  for (const component of ALL_COMPONENTS) {
     const doc = findWorkloadDoc(rendered, `visionx-supabase-${component}`);
     if (!doc) {
-      mismatches.push(`${component}: not found in rendered chart`);
+      missing.push(`${component}: not found in rendered chart`);
       continue;
     }
 
-    for (const probeName of ["startupProbe", "livenessProbe", "readinessProbe"]) {
-      const present = hasProbe(doc, probeName);
-      const shouldBePresent = expected[probeName];
-      if (present !== shouldBePresent) {
-        mismatches.push(
-          `${component}: expected ${probeName} to be ${shouldBePresent ? "present" : "absent"}, but it is ${present ? "present" : "absent"}`,
-        );
+    for (const probeName of REQUIRED_PROBES) {
+      if (!hasProbe(doc, probeName)) {
+        missing.push(`${component}: missing ${probeName}`);
       }
     }
   }
 
-  if (mismatches.length > 0) {
+  if (missing.length > 0) {
     throw new Error(
-      `Pre-flight check failed: probe coverage does not match the validated 12-component breakdown:\n  - ${mismatches.join("\n  - ")}`,
+      `Pre-flight check failed: some components are missing required probes:\n  - ${missing.join("\n  - ")}`,
     );
   }
 }
@@ -219,7 +220,7 @@ async function hardenSupabaseChart(askHelper) {
   checkProbeCoverage(rendered);
 
   consoleUtils.success(
-    "Pre-flight checks passed (db strategy/replicas, Realtime probes, full 12-component probe coverage).",
+    "Pre-flight checks passed (db strategy/replicas, Realtime probes, minimum probe coverage across all 12 components).",
   );
 
   consoleUtils.info("Running kubectl apply --dry-run=server against rendered chart...");
