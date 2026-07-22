@@ -13,10 +13,10 @@ const consoleUtils = require("../utils/consoleUtils");
  * from — SUPABASE_CHART_DIR is a clone of the public
  * supabase-community/supabase-kubernetes repo, and the hardening is
  * applied by hand-editing files directly on each site's VM. So this does
- * NOT git pull/fetch anything; it trusts whatever's currently on disk and
- * only requires it to be committed locally first (a clean working tree),
- * so each site keeps its own git history/rollback point for what was
- * actually applied.
+ * NOT git pull/fetch anything, and does NOT require a clean working tree —
+ * it applies whatever's currently on disk, the same as a manual
+ * `helm upgrade` would. Uncommitted changes only produce a warning (so
+ * there's a nudge toward keeping a git history, without blocking).
  *
  * Pre-flight checks specifically guard against the incident this hardening
  * itself must not reproduce: Realtime's readinessProbe hitting `httpGet
@@ -124,8 +124,8 @@ async function hardenSupabaseChart(askHelper) {
     cwd: chartDir,
   }).toString();
   if (dirtyStatus.trim().length > 0) {
-    throw new Error(
-      `${chartDir} has uncommitted changes — commit (or discard) them manually first, so this site's git history has a clear record of exactly what's being applied:\n${dirtyStatus}`,
+    consoleUtils.warn(
+      `${chartDir} has uncommitted changes — proceeding anyway (chart is applied from what's on disk, same as a manual helm upgrade would):\n${dirtyStatus}`,
     );
   }
 
