@@ -99,9 +99,15 @@ async function hardenSupabaseChart(askHelper) {
 
   // The chart dir is typically owned by a deploy user (e.g. klbfadmin) while
   // this tool commonly runs as root — git refuses to touch a repo it
-  // doesn't consider "safe" in that case. Register the exception up front
-  // so every site doesn't have to hit the error once and fix it manually.
-  execSync(`git config --global --add safe.directory ${chartDir}`, {
+  // doesn't consider "safe" in that case. Registering safe.directory for
+  // chartDir itself doesn't work here: SUPABASE_CHART_DIR points at a
+  // subdirectory of the actual git repo (e.g. .../supabase-kubernetes/
+  // charts/supabase), and git matches safe.directory against the repo's
+  // resolved top-level, not an arbitrary cwd inside it — which we can't
+  // reliably determine before trust is granted (`git rev-parse
+  // --show-toplevel` would hit the same dubious-ownership error). The
+  // wildcard form is what git itself documents for this case.
+  execSync(`git config --global --add safe.directory '*'`, {
     cwd: chartDir,
     stdio: "inherit",
   });
