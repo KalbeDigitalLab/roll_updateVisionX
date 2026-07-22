@@ -10,6 +10,8 @@ const updateMirthChannel = require("./usecases/updateMirthChannel");
 const deployHelper = require("./usecases/deployHelper");
 const deployDicomSend = require("./usecases/deployDicomSend");
 const increaseSupabaseLimit = require("./usecases/increaseSupabaseLimit");
+const hardenSupabaseChart = require("./usecases/hardenSupabaseChart");
+const triggerAnalyticsMaintenance = require("./usecases/triggerAnalyticsMaintenance");
 const deleteFhirByAccession = require("./cleaner/delete_fhir_by_accession");
 const AskHelper = require("./utils/readline");
 const consoleUtils = require("./utils/consoleUtils");
@@ -41,73 +43,104 @@ async function runUpdateFlow(ask) {
   // ask.ask() calls stop receiving input once inquirer is done with it.
   ask.close();
 
-  const { category } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "category",
-      message: "Pilih kategori proses:",
-      choices: [
-        { name: "Deployment", value: "deployment" },
-        { name: "Tool Cleaner", value: "cleaner" },
-        { name: "Keduanya (Deployment & Tool Cleaner)", value: "both" },
-        new inquirer.Separator(),
-        { name: "Kembali ke Menu Utama", value: "back" },
-      ],
-    },
-  ]);
-
-  if (category === "back") {
-    return new AskHelper();
-  }
-
+  // Wrapped in a loop so picking "back" inside either checkbox screen
+  // restarts from the category prompt instead of the only escape being
+  // Ctrl+C — previously only the category prompt itself had a way back.
+  let category;
   let deploymentTasks = [];
   let cleanerTasks = [];
 
-  if (category === "deployment" || category === "both") {
-    ({ deploymentTasks } = await inquirer.prompt([
+  while (true) {
+    ({ category } = await inquirer.prompt([
       {
-        type: "checkbox",
-        name: "deploymentTasks",
-        message:
-          'Pilih proses Deployment (spasi pilih, "a" pilih semua, enter lanjut):',
-        pageSize: 20,
+        type: "list",
+        name: "category",
+        message: "Pilih kategori proses:",
         choices: [
-          { name: "Update Image", value: "image" },
-          { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
-          { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
-          { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
-          { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
-          { name: "Deploy Kubernetes Helper", value: "helper" },
-          { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
-          { name: "Update Database", value: "db" },
-          { name: "Update Mirth Channel", value: "mirth" },
-          { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+          { name: "Deployment", value: "deployment" },
+          { name: "Tool Cleaner", value: "cleaner" },
+          { name: "Keduanya (Deployment & Tool Cleaner)", value: "both" },
+          new inquirer.Separator(),
+          { name: "Kembali ke Menu Utama", value: "back" },
         ],
       },
     ]));
-  }
 
-  if (category === "cleaner" || category === "both") {
-    consoleUtils.info(
-      "Langkah cleaner biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
-    );
+    if (category === "back") {
+      return new AskHelper();
+    }
 
-    ({ cleanerTasks } = await inquirer.prompt([
-      {
-        type: "checkbox",
-        name: "cleanerTasks",
-        message:
-          'Pilih Tool Cleaner (spasi pilih, "a" pilih semua, enter konfirmasi):',
-        pageSize: 20,
-        choices: [
-          { name: "Cleaner: Recount Instances", value: "recount" },
-          { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
-          { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
-          { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
-          { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
-        ],
-      },
-    ]));
+    deploymentTasks = [];
+    cleanerTasks = [];
+    let wentBack = false;
+
+    if (category === "deployment" || category === "both") {
+      ({ deploymentTasks } = await inquirer.prompt([
+        {
+          type: "checkbox",
+          name: "deploymentTasks",
+          message:
+            'Pilih proses Deployment (spasi pilih, "a" pilih semua, enter lanjut):',
+          pageSize: 20,
+          choices: [
+            { name: "Update Image", value: "image" },
+            { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
+            { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
+            { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
+            { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
+            { name: "Deploy Kubernetes Helper", value: "helper" },
+            { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
+            { name: "Update Database", value: "db" },
+            { name: "Update Mirth Channel", value: "mirth" },
+            { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+            { name: "Harden Supabase Chart (Recreate + Probes)", value: "hardenSupabaseChart" },
+            { name: "Trigger Analytics Log Cleanup + Vacuum Now", value: "triggerAnalyticsMaintenance" },
+            new inquirer.Separator(),
+            { name: "← Kembali ke Menu Kategori", value: "back" },
+          ],
+        },
+      ]));
+
+      if (deploymentTasks.includes("back")) {
+        wentBack = true;
+      }
+    }
+
+    if (!wentBack && (category === "cleaner" || category === "both")) {
+      consoleUtils.info(
+        "Langkah cleaner biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
+      );
+
+      ({ cleanerTasks } = await inquirer.prompt([
+        {
+          type: "checkbox",
+          name: "cleanerTasks",
+          message:
+            'Pilih Tool Cleaner (spasi pilih, "a" pilih semua, enter konfirmasi):',
+          pageSize: 20,
+          choices: [
+            { name: "Cleaner: Recount Instances", value: "recount" },
+            { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
+            { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
+            { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
+            { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
+            new inquirer.Separator(),
+            { name: "← Kembali ke Menu Kategori", value: "back" },
+          ],
+        },
+      ]));
+
+      if (cleanerTasks.includes("back")) {
+        wentBack = true;
+      }
+    }
+
+    if (wentBack) {
+      consoleUtils.info("Kembali ke menu kategori...");
+      continue;
+    }
+
+    break;
   }
 
   const selectedTasks = [...deploymentTasks, ...cleanerTasks];
@@ -122,6 +155,8 @@ async function runUpdateFlow(ask) {
   const runDb = selectedTasks.includes("db") ? "y" : "n";
   const runMirth = selectedTasks.includes("mirth") ? "y" : "n";
   const runSupabaseLimit = selectedTasks.includes("supabaseLimit") ? "y" : "n";
+  const runHardenSupabaseChart = selectedTasks.includes("hardenSupabaseChart") ? "y" : "n";
+  const runTriggerAnalyticsMaintenance = selectedTasks.includes("triggerAnalyticsMaintenance") ? "y" : "n";
   const runRecount = selectedTasks.includes("recount") ? "y" : "n";
   const runBackfillStarted = selectedTasks.includes("backfillStarted") ? "y" : "n";
   const runMerge = selectedTasks.includes("patientMerge") ? "y" : "n";
@@ -231,6 +266,25 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("Supabase Storage Limit Process Completed.");
   } else {
     consoleUtils.skipped("Skipping Supabase Storage Limit process.");
+  }
+
+  if (runHardenSupabaseChart.toLowerCase() === "y") {
+    consoleUtils.section("Harden Supabase Chart (Recreate + Probes)");
+    await hardenSupabaseChart(ask);
+    consoleUtils.success("Harden Supabase Chart Process Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Harden Supabase Chart process.");
+  }
+
+  if (runTriggerAnalyticsMaintenance.toLowerCase() === "y") {
+    consoleUtils.section("Trigger Analytics Log Cleanup + Vacuum Now");
+    const db = new DBAdapter(env);
+    await db.connect();
+    await triggerAnalyticsMaintenance(db);
+    await db.disconnect();
+    consoleUtils.success("Analytics Log Cleanup + Vacuum Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Analytics Log Cleanup + Vacuum.");
   }
 
   if (runRecount.toLowerCase() === "y") {
