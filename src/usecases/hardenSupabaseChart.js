@@ -150,14 +150,17 @@ function detectContainerPort(doc) {
 
 // Finds a top-level `component:` key's line range in values.example.yaml —
 // from the key itself to the line before the next top-level (0-indent) key,
-// or EOF.
+// or EOF. Flush-left `#comment` lines (found for real in this site's hand
+// edited file — old GOTRUE_* URLs disabled by commenting from column 0
+// under `auth.environment`) don't count as the next key, or the section
+// gets cut off dozens of lines early, well before probes are even reached.
 function findComponentSection(lines, component) {
   const startIndex = lines.findIndex((line) => new RegExp(`^${component}:\\s*$`).test(line));
   if (startIndex === -1) return null;
 
   let endIndex = lines.length;
   for (let i = startIndex + 1; i < lines.length; i++) {
-    if (/^\S/.test(lines[i])) {
+    if (/^\S/.test(lines[i]) && !/^#/.test(lines[i])) {
       endIndex = i;
       break;
     }
@@ -196,7 +199,7 @@ function findProbeInsertionPoint(lines, sectionStart, sectionEnd) {
 // lands on (matches the "shallow fallback" reasoning already used for
 // Realtime and db's hardening).
 function buildProbeBlock(probeName, port) {
-  const periodSeconds = probeName === "livenessProbe" ? 10 : 5;
+  const periodSeconds = probeName === "startupProbe" ? 5 : 60;
   const failureThreshold = probeName === "startupProbe" ? 60 : 3;
   return [
     `  ${probeName}:`,
@@ -206,6 +209,104 @@ function buildProbeBlock(probeName, port) {
     `    timeoutSeconds: 3`,
     `    failureThreshold: ${failureThreshold}`,
   ];
+}
+
+// Steady-state liveness/readiness checks shipped at periodSeconds: 5-10
+// (see PROBE_EXPECTATIONS), which turned out too frequent/noisy in
+// practice. Normalizes both to periodSeconds: 60 across all 12 components.
+// startupProbe is deliberately left untouched — it only runs once during
+// boot, and its faster cadence is what lets a slow-starting component
+// (e.g. db, see ensureDbStartupProbeWindow below) actually reach ready
+// within its failureThreshold instead of wasting most of that window
+// between checks.
+function ensureSteadyStateProbePeriod(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) {
+    consoleUtils.warn(`${valuesPath} not found — skipping probe period normalization.`);
+    return false;
+  }
+
+  const lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  let changed = false;
+
+  for (const component of Object.keys(PROBE_EXPECTATIONS)) {
+    const section = findComponentSection(lines, component);
+    if (!section) continue;
+
+    for (const probeName of ["readinessProbe", "livenessProbe"]) {
+      const blockStart = lines
+        .slice(section.startIndex, section.endIndex)
+        .findIndex((line) => new RegExp(`^ {2}${probeName}:\\s*$`).test(line));
+      if (blockStart === -1) continue;
+
+      const absoluteStart = section.startIndex + blockStart;
+      const blockEnd = findProbeBlockEnd(lines, absoluteStart, section.endIndex);
+
+      for (let i = absoluteStart + 1; i < blockEnd; i++) {
+        const match = lines[i].match(/^(\s*)periodSeconds:\s*(\d+)\s*$/);
+        if (match && match[2] !== "60") {
+          lines[i] = `${match[1]}periodSeconds: 60`;
+          changed = true;
+          consoleUtils.success(`Set ${component}.${probeName}.periodSeconds to 60 in values.example.yaml`);
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  return changed;
+}
+
+// db's startupProbe window (failureThreshold * periodSeconds, plus
+// initialDelaySeconds) shipped at ~10 minutes, too tight for a slow
+// crash-recovery boot. Doubles failureThreshold to 120, giving ~20
+// minutes — matched to the `helm upgrade --timeout 20m` already used
+// below, since a longer startup window than the upgrade itself will wait
+// for wouldn't help. periodSeconds stays at 10s: the check frequency
+// during boot was already fine, it's the ceiling that was short.
+const DB_STARTUP_FAILURE_THRESHOLD = 120;
+
+function ensureDbStartupProbeWindow(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) {
+    consoleUtils.warn(`${valuesPath} not found — skipping db startupProbe window extension.`);
+    return false;
+  }
+
+  const lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  const section = findComponentSection(lines, "db");
+  if (!section) {
+    consoleUtils.warn(`Could not find "db:" section in ${valuesPath} — skipping db startupProbe window extension.`);
+    return false;
+  }
+
+  const blockStart = lines
+    .slice(section.startIndex, section.endIndex)
+    .findIndex((line) => /^ {2}startupProbe:\s*$/.test(line));
+  if (blockStart === -1) {
+    consoleUtils.warn(`db has no startupProbe block in ${valuesPath} — skipping window extension.`);
+    return false;
+  }
+
+  const absoluteStart = section.startIndex + blockStart;
+  const blockEnd = findProbeBlockEnd(lines, absoluteStart, section.endIndex);
+
+  let changed = false;
+  for (let i = absoluteStart + 1; i < blockEnd; i++) {
+    const match = lines[i].match(/^(\s*)failureThreshold:\s*(\d+)\s*$/);
+    if (match && Number(match[2]) < DB_STARTUP_FAILURE_THRESHOLD) {
+      lines[i] = `${match[1]}failureThreshold: ${DB_STARTUP_FAILURE_THRESHOLD}`;
+      changed = true;
+      consoleUtils.success(`Set db.startupProbe.failureThreshold to ${DB_STARTUP_FAILURE_THRESHOLD} (~20min window) in values.example.yaml`);
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  return changed;
 }
 
 // Auto-injects any required-but-missing probe (per PROBE_EXPECTATIONS)
@@ -263,6 +364,118 @@ function ensureProbeCoverage(chartDir, rendered) {
   return changed;
 }
 
+const PROBE_HANDLER_KEYS = ["httpGet", "tcpSocket", "exec", "grpc"];
+
+// Returns the list of handler keys (httpGet/tcpSocket/exec/grpc) present
+// under a `<probeName>:` block in a rendered manifest doc, bounded by
+// indentation — the block ends at the first following non-blank line
+// indented at or below the probe key's own indent. Shared by the static
+// collision check and the live-drift check below.
+function extractProbeHandlers(doc, probeName) {
+  const lines = doc.split("\n");
+  const startIndex = lines.findIndex((line) => new RegExp(`^(\\s*)${probeName}:\\s*$`).test(line));
+  if (startIndex === -1) return null;
+
+  const indent = lines[startIndex].match(/^(\s*)/)[1].length;
+  const handlers = [];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "") continue;
+    const curIndent = line.match(/^(\s*)/)[1].length;
+    if (curIndent <= indent) break;
+    const match = line.match(/^\s*(httpGet|tcpSocket|exec|grpc):\s*$/);
+    if (match) handlers.push(match[1]);
+  }
+  return handlers;
+}
+
+// Static defense-in-depth: Kubernetes rejects any probe with more than one
+// handler type. The current chart has none of these (confirmed by scanning
+// every rendered probe block), but nothing previously checked for it, so a
+// future manual chart edit could reintroduce it silently.
+function checkProbeHandlerCollisions(rendered) {
+  const collisions = [];
+
+  for (const component of Object.keys(PROBE_EXPECTATIONS)) {
+    const doc = findWorkloadDoc(rendered, `visionx-supabase-${component}`);
+    if (!doc) continue;
+
+    for (const probeName of ["startupProbe", "livenessProbe", "readinessProbe"]) {
+      const handlers = extractProbeHandlers(doc, probeName);
+      if (handlers && handlers.length > 1) {
+        collisions.push(`${component}.${probeName}: multiple handler types (${handlers.join(", ")}) — Kubernetes allows only one`);
+      }
+    }
+  }
+
+  if (collisions.length > 0) {
+    throw new Error(
+      `Pre-flight check failed: rendered chart has probe blocks with more than one handler type:\n  - ${collisions.join("\n  - ")}`,
+    );
+  }
+}
+
+// Reads the live workload's first container (Deployment for most
+// components, StatefulSet for db) straight from the cluster. Returns null
+// if neither kind exists yet (fresh install — nothing to drift from).
+function getLiveContainer(component) {
+  const name = `visionx-supabase-${component}`;
+  for (const kind of ["deployment", "statefulset"]) {
+    try {
+      const json = execSync(`kubectl get ${kind} ${name} -n supabase -o json`, {
+        stdio: ["ignore", "pipe", "pipe"],
+      }).toString();
+      return JSON.parse(json).spec.template.spec.containers[0];
+    } catch (err) {
+      continue;
+    }
+  }
+  return null;
+}
+
+function handlerTypeOf(probe) {
+  if (!probe) return null;
+  return PROBE_HANDLER_KEYS.find((key) => probe[key] !== undefined) || null;
+}
+
+// Detects the actual failure mode behind the 2026-07-22 realtime incident:
+// helm computes its upgrade patch by diffing its OWN release history, not
+// the live object, so if a probe's handler type was changed on the live
+// resource out-of-band (e.g. a manual `kubectl edit` during an earlier
+// incident) helm's patch can add the new handler without clearing the old
+// one — the API then rejects the merged object with "may not specify more
+// than 1 handler type". `kubectl apply --dry-run=server` doesn't catch this
+// because Server-Side Apply merges correctly; only the real `helm upgrade`
+// is exposed to it. Block-and-report only — this never mutates live cluster
+// state itself, matching every other check in this file.
+function checkLiveProbeDrift(rendered) {
+  const drifted = [];
+
+  for (const component of Object.keys(PROBE_EXPECTATIONS)) {
+    const doc = findWorkloadDoc(rendered, `visionx-supabase-${component}`);
+    if (!doc) continue;
+
+    const liveContainer = getLiveContainer(component);
+    if (!liveContainer) continue;
+
+    for (const probeName of ["startupProbe", "livenessProbe", "readinessProbe"]) {
+      const desiredHandler = (extractProbeHandlers(doc, probeName) || [])[0] || null;
+      const liveHandler = handlerTypeOf(liveContainer[probeName]);
+      if (liveHandler && desiredHandler && liveHandler !== desiredHandler) {
+        drifted.push(
+          `${component}.${probeName}: live cluster has "${liveHandler}" but the chart now wants "${desiredHandler}" — helm's patch may add ${desiredHandler} without clearing ${liveHandler}, causing "Forbidden: may not specify more than 1 handler type". Reconcile first by removing the whole probe (never just the handler key — that leaves 0 handlers, which Kubernetes also rejects) and let helm add it back clean: kubectl patch deployment visionx-supabase-${component} -n supabase --type=json -p='[{"op":"remove","path":"/spec/template/spec/containers/0/${probeName}"}]'`,
+        );
+      }
+    }
+  }
+
+  if (drifted.length > 0) {
+    throw new Error(
+      `Pre-flight check failed: live cluster probes have drifted from what helm tracks — helm upgrade would try to patch this and fail:\n  - ${drifted.join("\n  - ")}`,
+    );
+  }
+}
+
 function checkProbeCoverage(rendered) {
   const missing = [];
 
@@ -297,6 +510,8 @@ async function hardenSupabaseChart(askHelper) {
 
   ensureDbRecreateStrategy(chartDir);
   ensureRealtimeReadinessProbe(chartDir);
+  ensureSteadyStateProbePeriod(chartDir);
+  ensureDbStartupProbeWindow(chartDir);
 
   consoleUtils.info("Running helm lint...");
   execSync("helm lint .", { cwd: chartDir, stdio: "inherit" });
@@ -344,9 +559,11 @@ async function hardenSupabaseChart(askHelper) {
   }
 
   checkProbeCoverage(rendered);
+  checkProbeHandlerCollisions(rendered);
+  checkLiveProbeDrift(rendered);
 
   consoleUtils.success(
-    "Pre-flight checks passed (db strategy/replicas, Realtime probes, required probe coverage across all 12 components — auto-injecting any that were missing).",
+    "Pre-flight checks passed (db strategy/replicas, Realtime probes, required probe coverage, no multi-handler probes, no live/chart probe drift across all 12 components — auto-injecting any that were missing).",
   );
 
   consoleUtils.info("Running kubectl apply --dry-run=server against rendered chart...");

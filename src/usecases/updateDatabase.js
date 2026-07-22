@@ -1,5 +1,6 @@
 const path = require('path');
 const consoleUtils = require('../utils/consoleUtils');
+const { getAnalyticsLogTables } = require('../utils/analyticsLogTables');
 
 /**
  * `_analytics.log_events_<token>` table names embed a per-site UUID token,
@@ -8,28 +9,24 @@ const consoleUtils = require('../utils/consoleUtils');
  * this can't be a static .sql file. It has to query the live tokens and
  * schedule the VACUUM cron job dynamically instead.
  */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 async function scheduleAnalyticsVacuum(dbAdapter) {
-  const result = await dbAdapter.query('SELECT token FROM _analytics.sources');
-  const allTokens = result.rows.map((r) => String(r.token));
-  const tokens = allTokens.filter((token) => UUID_RE.test(token));
-
-  if (tokens.length < allTokens.length) {
-    consoleUtils.warn(
-      `Skipping ${allTokens.length - tokens.length} _analytics.sources token(s) that don't look like a UUID (won't be VACUUMed).`,
-    );
-  }
+  const { tokens, tableNames } = await getAnalyticsLogTables(dbAdapter);
 
   if (tokens.length === 0) {
     consoleUtils.info('No _analytics.sources found — skipping vacuum-analytics-logs cron setup.');
     return;
   }
 
-  const vacuumStatements = tokens
-    .map((token) => `VACUUM _analytics.log_events_${String(token).replace(/-/g, '_')};`)
-    .join(' ');
-  const scheduleSql = `SELECT cron.schedule('vacuum-analytics-logs', '15 3 * * *', '${vacuumStatements.replace(/'/g, "''")}')`;
+  // A single VACUUM statement takes a comma-separated table list — must
+  // stay one statement, not one `VACUUM x;` per table joined together.
+  // pg_cron sends the whole command string to Postgres in one shot, and a
+  // string containing multiple semicolon-separated statements gets wrapped
+  // in an implicit transaction by Postgres itself; VACUUM refuses to run
+  // inside a transaction block ("VACUUM cannot run inside a transaction
+  // block"). This is the exact bug that broke this job on its first real
+  // cron firing (2026-07-22 03:15 UTC) before this fix.
+  const vacuumStatement = `VACUUM ${tableNames.join(', ')}`;
+  const scheduleSql = `SELECT cron.schedule('vacuum-analytics-logs', '15 3 * * *', '${vacuumStatement.replace(/'/g, "''")}')`;
 
   await dbAdapter.query(scheduleSql);
   consoleUtils.success(`Scheduled vacuum-analytics-logs for ${tokens.length} table(s).`);
