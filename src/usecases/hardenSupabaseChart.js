@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const { execSync } = require("child_process");
 const consoleUtils = require("../utils/consoleUtils");
 
@@ -9,14 +11,12 @@ const consoleUtils = require("../utils/consoleUtils");
  * so it requires an explicit operator confirmation and fails loudly on any
  * problem rather than swallowing errors.
  *
- * There is no shared internal fork of the chart to pull the hardening
- * from — SUPABASE_CHART_DIR is a clone of the public
- * supabase-community/supabase-kubernetes repo, and the hardening is
- * applied by hand-editing files directly on each site's VM. So this does
- * NOT git pull/fetch anything, and does NOT require a clean working tree —
- * it applies whatever's currently on disk, the same as a manual
- * `helm upgrade` would. Uncommitted changes only produce a warning (so
- * there's a nudge toward keeping a git history, without blocking).
+ * The chart at SUPABASE_CHART_DIR is hand-edited directly on each site's
+ * VM (there's no shared internal fork to pull from — its git remote is
+ * just the public supabase-community/supabase-kubernetes repo). This
+ * usecase does no git operations at all — it applies whatever's on disk,
+ * the same as the manual `helm upgrade` process already validated on the
+ * staging VM did.
  *
  * Pre-flight checks specifically guard against the incident this hardening
  * itself must not reproduce: Realtime's readinessProbe hitting `httpGet
@@ -69,6 +69,39 @@ const PROBE_EXPECTATIONS = {
   functions: { startupProbe: false, livenessProbe: false, readinessProbe: true },
 };
 
+// db must never rolling-update — that's the actual root cause fix (see
+// supabase-db-wal-corruption-incident doc: overlapping old/new db pods
+// during a RollingUpdate both wrote WAL to the same hostPath, corrupting
+// the checkpoint record). Hardcoded directly rather than gated behind a
+// values key, so it can't be silently missed by a values.yaml that wasn't
+// fully updated on a given site (exactly what happened here — the manual
+// hardening pass added probes but missed this).
+function ensureDbRecreateStrategy(chartDir) {
+  const deploymentPath = path.join(chartDir, "templates", "db", "deployment.yaml");
+  if (!fs.existsSync(deploymentPath)) {
+    consoleUtils.warn(`${deploymentPath} not found — skipping strategy: Recreate injection.`);
+    return;
+  }
+
+  const content = fs.readFileSync(deploymentPath, "utf8");
+  if (/strategy:\s*\n\s*type:\s*Recreate/.test(content)) {
+    consoleUtils.info("db deployment already has strategy: Recreate.");
+    return;
+  }
+
+  const lines = content.split(/\r?\n/);
+  const selectorIndex = lines.findIndex((line) => /^ {2}selector:\s*$/.test(line));
+  if (selectorIndex === -1) {
+    throw new Error(
+      `Could not find "  selector:" in ${deploymentPath} to anchor the strategy: Recreate injection — add it manually as a sibling of replicas:/selector:/template: under the Deployment's spec:.`,
+    );
+  }
+
+  lines.splice(selectorIndex, 0, "  strategy:", "    type: Recreate");
+  fs.writeFileSync(deploymentPath, lines.join("\n"), "utf8");
+  consoleUtils.success(`Injected strategy: Recreate into ${deploymentPath}`);
+}
+
 function checkProbeCoverage(rendered) {
   const mismatches = [];
 
@@ -105,29 +138,7 @@ async function hardenSupabaseChart(askHelper) {
 
   consoleUtils.info(`Using Supabase chart at: ${chartDir}`);
 
-  // The chart dir is typically owned by a deploy user (e.g. klbfadmin) while
-  // this tool commonly runs as root — git refuses to touch a repo it
-  // doesn't consider "safe" in that case. Registering safe.directory for
-  // chartDir itself doesn't work here: SUPABASE_CHART_DIR points at a
-  // subdirectory of the actual git repo (e.g. .../supabase-kubernetes/
-  // charts/supabase), and git matches safe.directory against the repo's
-  // resolved top-level, not an arbitrary cwd inside it — which we can't
-  // reliably determine before trust is granted (`git rev-parse
-  // --show-toplevel` would hit the same dubious-ownership error). The
-  // wildcard form is what git itself documents for this case.
-  execSync(`git config --global --add safe.directory '*'`, {
-    cwd: chartDir,
-    stdio: "inherit",
-  });
-
-  const dirtyStatus = execSync("git status --porcelain", {
-    cwd: chartDir,
-  }).toString();
-  if (dirtyStatus.trim().length > 0) {
-    consoleUtils.warn(
-      `${chartDir} has uncommitted changes — proceeding anyway (chart is applied from what's on disk, same as a manual helm upgrade would):\n${dirtyStatus}`,
-    );
-  }
+  ensureDbRecreateStrategy(chartDir);
 
   consoleUtils.info("Running helm lint...");
   execSync("helm lint .", { cwd: chartDir, stdio: "inherit" });
