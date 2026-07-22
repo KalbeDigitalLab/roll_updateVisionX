@@ -49,30 +49,27 @@ function hasProbe(doc, probeName) {
   return new RegExp(`^\\s*${probeName}:\\s*$`, "m").test(doc);
 }
 
-// All 12 Supabase components. Confirmed on the real VM that the actual
-// hardened chart gives every component startupProbe + livenessProbe +
-// readinessProbe — more complete than an earlier partial-coverage
-// breakdown suggested. So the check below only enforces a minimum baseline
-// (readinessProbe + livenessProbe present on all 12) and never fails for
-// *extra* probes (e.g. a startupProbe that isn't strictly required) — more
-// health-check coverage than the minimum is fine, only missing coverage
-// is a real problem. db's strategy/replicas and Realtime's httpGet-path-/
-// ban are already covered by their own dedicated checks above/below.
-const ALL_COMPONENTS = [
-  "db",
-  "studio",
-  "auth",
-  "rest",
-  "realtime",
-  "meta",
-  "storage",
-  "imgproxy",
-  "kong",
-  "analytics",
-  "vector",
-  "functions",
-];
-const REQUIRED_PROBES = ["readinessProbe", "livenessProbe"];
+// Minimum required probe coverage per component, per the validated
+// breakdown: startupProbe is db-only; livenessProbe covers 7 components;
+// readinessProbe covers 11 (all but db). This is a MINIMUM, not an exact
+// match — a component having more probes than listed here is fine and
+// never flagged; only genuinely missing required probes are a problem
+// (learned the hard way: the real chart already exceeds this table
+// almost everywhere, which is good, not an error).
+const PROBE_EXPECTATIONS = {
+  db: { startupProbe: true, livenessProbe: true, readinessProbe: false },
+  studio: { startupProbe: false, livenessProbe: true, readinessProbe: true },
+  auth: { startupProbe: false, livenessProbe: false, readinessProbe: true },
+  rest: { startupProbe: false, livenessProbe: false, readinessProbe: true },
+  realtime: { startupProbe: false, livenessProbe: true, readinessProbe: true },
+  meta: { startupProbe: false, livenessProbe: false, readinessProbe: true },
+  storage: { startupProbe: false, livenessProbe: true, readinessProbe: true },
+  imgproxy: { startupProbe: false, livenessProbe: true, readinessProbe: true },
+  kong: { startupProbe: false, livenessProbe: false, readinessProbe: true },
+  analytics: { startupProbe: false, livenessProbe: true, readinessProbe: true },
+  vector: { startupProbe: false, livenessProbe: true, readinessProbe: true },
+  functions: { startupProbe: false, livenessProbe: false, readinessProbe: true },
+};
 
 // db must never rolling-update — that's the actual root cause fix (see
 // supabase-db-wal-corruption-incident doc: overlapping old/new db pods
@@ -146,18 +143,138 @@ function ensureRealtimeReadinessProbe(chartDir) {
   consoleUtils.success(`Fixed Realtime readinessProbe to use tcpSocket in ${valuesPath}`);
 }
 
+function detectContainerPort(doc) {
+  const match = doc.match(/containerPort:\s*(\d+)/);
+  return match ? match[1] : null;
+}
+
+// Finds a top-level `component:` key's line range in values.example.yaml —
+// from the key itself to the line before the next top-level (0-indent) key,
+// or EOF.
+function findComponentSection(lines, component) {
+  const startIndex = lines.findIndex((line) => new RegExp(`^${component}:\\s*$`).test(line));
+  if (startIndex === -1) return null;
+
+  let endIndex = lines.length;
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    if (/^\S/.test(lines[i])) {
+      endIndex = i;
+      break;
+    }
+  }
+  return { startIndex, endIndex };
+}
+
+function findProbeBlockEnd(lines, blockStart, sectionEnd) {
+  for (let i = blockStart + 1; i < sectionEnd; i++) {
+    if (/^ {2}\S/.test(lines[i])) return i;
+  }
+  return sectionEnd;
+}
+
+// Prefers inserting right after an existing sibling probe (keeps probes
+// grouped together, matching the file's existing style), falling back to
+// right before `resources:` (present in nearly every component section
+// observed on the real VM), else the end of the section.
+function findProbeInsertionPoint(lines, sectionStart, sectionEnd) {
+  for (const probeName of ["readinessProbe", "livenessProbe", "startupProbe"]) {
+    const blockStart = lines
+      .slice(sectionStart, sectionEnd)
+      .findIndex((line) => new RegExp(`^ {2}${probeName}:\\s*$`).test(line));
+    if (blockStart !== -1) {
+      return findProbeBlockEnd(lines, sectionStart + blockStart, sectionEnd);
+    }
+  }
+  for (let i = sectionStart; i < sectionEnd; i++) {
+    if (/^ {2}resources:\s*$/.test(lines[i])) return i;
+  }
+  return sectionEnd;
+}
+
+// tcpSocket-only by design — never httpGet — so an auto-injected probe can
+// never reproduce the log-bloat incident regardless of which component it
+// lands on (matches the "shallow fallback" reasoning already used for
+// Realtime and db's hardening).
+function buildProbeBlock(probeName, port) {
+  const periodSeconds = probeName === "livenessProbe" ? 10 : 5;
+  const failureThreshold = probeName === "startupProbe" ? 60 : 3;
+  return [
+    `  ${probeName}:`,
+    `    tcpSocket:`,
+    `      port: ${port}`,
+    `    periodSeconds: ${periodSeconds}`,
+    `    timeoutSeconds: 3`,
+    `    failureThreshold: ${failureThreshold}`,
+  ];
+}
+
+// Auto-injects any required-but-missing probe (per PROBE_EXPECTATIONS)
+// into values.example.yaml, assuming the template already has the
+// `{{- with .Values.<component>.<probeType> }}` capability — confirmed
+// present for db and realtime using an identical pattern, treated as the
+// working assumption for the rest since this is one mechanical hardening
+// pass by one author. Components/probes where that assumption doesn't
+// hold (template lacks the capability) get caught by checkProbeCoverage
+// afterward, which re-renders and reports exactly what's still missing
+// rather than silently doing nothing.
+function ensureProbeCoverage(chartDir, rendered) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) {
+    consoleUtils.warn(`${valuesPath} not found — skipping probe coverage injection.`);
+    return false;
+  }
+
+  const lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  let changed = false;
+  const skipped = [];
+
+  for (const [component, expected] of Object.entries(PROBE_EXPECTATIONS)) {
+    const doc = findWorkloadDoc(rendered, `visionx-supabase-${component}`);
+    if (!doc) continue;
+
+    for (const probeName of ["startupProbe", "livenessProbe", "readinessProbe"]) {
+      if (!expected[probeName] || hasProbe(doc, probeName)) continue;
+
+      const section = findComponentSection(lines, component);
+      if (!section) {
+        skipped.push(`${component}.${probeName}: could not find "${component}:" section in values.example.yaml`);
+        continue;
+      }
+
+      const port = detectContainerPort(doc);
+      if (!port) {
+        skipped.push(`${component}.${probeName}: could not detect containerPort in rendered chart`);
+        continue;
+      }
+
+      const insertAt = findProbeInsertionPoint(lines, section.startIndex + 1, section.endIndex);
+      lines.splice(insertAt, 0, ...buildProbeBlock(probeName, port));
+      changed = true;
+      consoleUtils.success(`Injected ${probeName} (tcpSocket:${port}) for ${component} into values.example.yaml`);
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  if (skipped.length > 0) {
+    consoleUtils.warn(`Could not auto-inject some probes — add manually:\n  - ${skipped.join("\n  - ")}`);
+  }
+  return changed;
+}
+
 function checkProbeCoverage(rendered) {
   const missing = [];
 
-  for (const component of ALL_COMPONENTS) {
+  for (const [component, expected] of Object.entries(PROBE_EXPECTATIONS)) {
     const doc = findWorkloadDoc(rendered, `visionx-supabase-${component}`);
     if (!doc) {
       missing.push(`${component}: not found in rendered chart`);
       continue;
     }
 
-    for (const probeName of REQUIRED_PROBES) {
-      if (!hasProbe(doc, probeName)) {
+    for (const probeName of ["startupProbe", "livenessProbe", "readinessProbe"]) {
+      if (expected[probeName] && !hasProbe(doc, probeName)) {
         missing.push(`${component}: missing ${probeName}`);
       }
     }
@@ -165,7 +282,7 @@ function checkProbeCoverage(rendered) {
 
   if (missing.length > 0) {
     throw new Error(
-      `Pre-flight check failed: some components are missing required probes:\n  - ${missing.join("\n  - ")}`,
+      `Pre-flight check failed: required probes still missing after auto-injection — the template likely lacks the {{- with .Values.<component>.<probeType> }} capability block and needs a manual template edit, not just a values change:\n  - ${missing.join("\n  - ")}`,
     );
   }
 }
@@ -185,10 +302,19 @@ async function hardenSupabaseChart(askHelper) {
   execSync("helm lint .", { cwd: chartDir, stdio: "inherit" });
 
   consoleUtils.info("Rendering chart with helm template...");
-  const rendered = execSync(
+  let rendered = execSync(
     "helm template visionx . -f values.example.yaml -n supabase",
     { cwd: chartDir },
   ).toString();
+
+  const injected = ensureProbeCoverage(chartDir, rendered);
+  if (injected) {
+    consoleUtils.info("Re-rendering chart after probe injection...");
+    rendered = execSync(
+      "helm template visionx . -f values.example.yaml -n supabase",
+      { cwd: chartDir },
+    ).toString();
+  }
 
   const dbDoc = findWorkloadDoc(rendered, "visionx-supabase-db");
   if (!dbDoc) {
@@ -220,7 +346,7 @@ async function hardenSupabaseChart(askHelper) {
   checkProbeCoverage(rendered);
 
   consoleUtils.success(
-    "Pre-flight checks passed (db strategy/replicas, Realtime probes, minimum probe coverage across all 12 components).",
+    "Pre-flight checks passed (db strategy/replicas, Realtime probes, required probe coverage across all 12 components — auto-injecting any that were missing).",
   );
 
   consoleUtils.info("Running kubectl apply --dry-run=server against rendered chart...");
