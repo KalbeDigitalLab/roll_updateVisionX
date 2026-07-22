@@ -102,6 +102,45 @@ function ensureDbRecreateStrategy(chartDir) {
   consoleUtils.success(`Injected strategy: Recreate into ${deploymentPath}`);
 }
 
+// Realtime's readinessProbe/livenessProbe templates are already correctly
+// wired via `{{- with .Values.realtime.readinessProbe }}` (confirmed on
+// the real VM: templates/realtime/deployment.yaml:127-130), so the fix
+// belongs in values.example.yaml — the file actually passed via -f to
+// every helm command in this usecase — not the template itself.
+// readinessProbe: httpGet path:/ port:4000 next to livenessProbe:
+// tcpSocket port:4000 is a unique fingerprint: no other component in
+// values.example.yaml pairs those two probe shapes on port 4000.
+function ensureRealtimeReadinessProbe(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) {
+    consoleUtils.warn(`${valuesPath} not found — skipping Realtime readinessProbe fix.`);
+    return;
+  }
+
+  const content = fs.readFileSync(valuesPath, "utf8");
+  const lines = content.split(/\r?\n/);
+
+  const readinessIndex = lines.findIndex((line, i) => {
+    if (!/^ {2}readinessProbe:\s*$/.test(line)) return false;
+    if (lines[i + 1] !== "    httpGet:") return false;
+    if (lines[i + 2] !== "      path: /") return false;
+    if (lines[i + 3] !== "      port: 4000") return false;
+    const window = lines.slice(i, i + 15).join("\n");
+    return /livenessProbe:\s*\n\s*tcpSocket:\s*\n\s*port:\s*4000/.test(window);
+  });
+
+  if (readinessIndex === -1) {
+    consoleUtils.info(
+      "Realtime readinessProbe: httpGet path:/ port:4000 pattern not found in values.example.yaml (already fixed, or in an unexpected shape — the pre-flight check below will catch it either way).",
+    );
+    return;
+  }
+
+  lines.splice(readinessIndex + 1, 3, "    tcpSocket:", "      port: 4000");
+  fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  consoleUtils.success(`Fixed Realtime readinessProbe to use tcpSocket in ${valuesPath}`);
+}
+
 function checkProbeCoverage(rendered) {
   const mismatches = [];
 
@@ -139,6 +178,7 @@ async function hardenSupabaseChart(askHelper) {
   consoleUtils.info(`Using Supabase chart at: ${chartDir}`);
 
   ensureDbRecreateStrategy(chartDir);
+  ensureRealtimeReadinessProbe(chartDir);
 
   consoleUtils.info("Running helm lint...");
   execSync("helm lint .", { cwd: chartDir, stdio: "inherit" });
