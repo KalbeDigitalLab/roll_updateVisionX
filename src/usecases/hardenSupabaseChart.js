@@ -150,14 +150,17 @@ function detectContainerPort(doc) {
 
 // Finds a top-level `component:` key's line range in values.example.yaml —
 // from the key itself to the line before the next top-level (0-indent) key,
-// or EOF.
+// or EOF. Flush-left `#comment` lines (found for real in this site's hand
+// edited file — old GOTRUE_* URLs disabled by commenting from column 0
+// under `auth.environment`) don't count as the next key, or the section
+// gets cut off dozens of lines early, well before probes are even reached.
 function findComponentSection(lines, component) {
   const startIndex = lines.findIndex((line) => new RegExp(`^${component}:\\s*$`).test(line));
   if (startIndex === -1) return null;
 
   let endIndex = lines.length;
   for (let i = startIndex + 1; i < lines.length; i++) {
-    if (/^\S/.test(lines[i])) {
+    if (/^\S/.test(lines[i]) && !/^#/.test(lines[i])) {
       endIndex = i;
       break;
     }
@@ -196,7 +199,7 @@ function findProbeInsertionPoint(lines, sectionStart, sectionEnd) {
 // lands on (matches the "shallow fallback" reasoning already used for
 // Realtime and db's hardening).
 function buildProbeBlock(probeName, port) {
-  const periodSeconds = probeName === "livenessProbe" ? 10 : 5;
+  const periodSeconds = probeName === "startupProbe" ? 5 : 60;
   const failureThreshold = probeName === "startupProbe" ? 60 : 3;
   return [
     `  ${probeName}:`,
@@ -206,6 +209,53 @@ function buildProbeBlock(probeName, port) {
     `    timeoutSeconds: 3`,
     `    failureThreshold: ${failureThreshold}`,
   ];
+}
+
+// Steady-state liveness/readiness checks shipped at periodSeconds: 5-10
+// (see PROBE_EXPECTATIONS), which turned out too frequent/noisy in
+// practice. Normalizes both to periodSeconds: 60 across all 12 components.
+// startupProbe is deliberately left untouched — it only runs once during
+// boot, and its faster cadence is what lets a slow-starting component
+// (e.g. db, up to a 10-minute window) actually reach ready within its
+// failureThreshold instead of wasting most of that window between checks.
+function ensureSteadyStateProbePeriod(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) {
+    consoleUtils.warn(`${valuesPath} not found — skipping probe period normalization.`);
+    return false;
+  }
+
+  const lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  let changed = false;
+
+  for (const component of Object.keys(PROBE_EXPECTATIONS)) {
+    const section = findComponentSection(lines, component);
+    if (!section) continue;
+
+    for (const probeName of ["readinessProbe", "livenessProbe"]) {
+      const blockStart = lines
+        .slice(section.startIndex, section.endIndex)
+        .findIndex((line) => new RegExp(`^ {2}${probeName}:\\s*$`).test(line));
+      if (blockStart === -1) continue;
+
+      const absoluteStart = section.startIndex + blockStart;
+      const blockEnd = findProbeBlockEnd(lines, absoluteStart, section.endIndex);
+
+      for (let i = absoluteStart + 1; i < blockEnd; i++) {
+        const match = lines[i].match(/^(\s*)periodSeconds:\s*(\d+)\s*$/);
+        if (match && match[2] !== "60") {
+          lines[i] = `${match[1]}periodSeconds: 60`;
+          changed = true;
+          consoleUtils.success(`Set ${component}.${probeName}.periodSeconds to 60 in values.example.yaml`);
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  return changed;
 }
 
 // Auto-injects any required-but-missing probe (per PROBE_EXPECTATIONS)
@@ -409,6 +459,7 @@ async function hardenSupabaseChart(askHelper) {
 
   ensureDbRecreateStrategy(chartDir);
   ensureRealtimeReadinessProbe(chartDir);
+  ensureSteadyStateProbePeriod(chartDir);
 
   consoleUtils.info("Running helm lint...");
   execSync("helm lint .", { cwd: chartDir, stdio: "inherit" });
