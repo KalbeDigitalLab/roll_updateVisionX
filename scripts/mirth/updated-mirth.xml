@@ -2411,7 +2411,7 @@ try {
 
         study.identifier = [
             { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId },
-            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: UniqueStudyID }
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: studyID }
         ];
         serviceRequest.identifier = [
             { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId }
@@ -2443,7 +2443,7 @@ try {
             // Update identifiers for both study and procedure payload
             study.identifier = [
                 { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: FhirId },
-                { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: UniqueStudyID }
+                { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: studyID }
             ];
             procedure.identifier = [
                 { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: FhirId },
