@@ -474,6 +474,66 @@ function ensureDbStartupProbeWindow(chartDir) {
   return changed;
 }
 
+// db's Postgres process only reliably answers on port 5432 / the unix
+// socket — NOT the "http" port 9999 declared in its container spec, which
+// nothing actually listens on (confirmed live on the real VM: a
+// tcpSocket:9999 startupProbe got "connection refused" on every single
+// check, forever — db restarted in an infinite loop, never once
+// succeeding, until helm's own --timeout rolled the release back). The
+// existing (working) livenessProbe already avoids this by using
+// `exec: pg_isready -U postgres` instead of guessing a port — startupProbe
+// mirrors it exactly rather than going through the generic
+// containerPort-detection path every other component's probe uses.
+function buildDbStartupProbeBlock(failureThreshold) {
+  return [
+    "  startupProbe:",
+    "    exec:",
+    "      command:",
+    "        - pg_isready",
+    "        - -U",
+    "        - postgres",
+    "    periodSeconds: 5",
+    "    timeoutSeconds: 3",
+    `    failureThreshold: ${failureThreshold}`,
+  ];
+}
+
+// Repairs a db.startupProbe that was auto-injected via the generic
+// tcpSocket+containerPort logic before this fix existed (confirmed real
+// case: tcpSocket:9999, an infinite restart loop live in production).
+// Field operators have no way to hand-fix a wrong probe handler, so this
+// detects and rewrites it automatically rather than requiring another
+// failed run to notice.
+function ensureDbStartupProbeUsesPgIsReady(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) return false;
+
+  const lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  const section = findComponentSection(lines, "db");
+  if (!section) return false;
+
+  const blockStart = lines
+    .slice(section.startIndex, section.endIndex)
+    .findIndex((line) => /^ {2}startupProbe:\s*$/.test(line));
+  if (blockStart === -1) return false;
+
+  const absoluteStart = section.startIndex + blockStart;
+  const blockEnd = findProbeBlockEnd(lines, absoluteStart, section.endIndex);
+  const blockText = lines.slice(absoluteStart, blockEnd).join("\n");
+
+  if (!/tcpSocket:/.test(blockText)) return false;
+
+  const failureMatch = blockText.match(/failureThreshold:\s*(\d+)/);
+  const failureThreshold = failureMatch ? failureMatch[1] : String(DB_STARTUP_FAILURE_THRESHOLD);
+
+  lines.splice(absoluteStart, blockEnd - absoluteStart, ...buildDbStartupProbeBlock(failureThreshold));
+  fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  consoleUtils.warn(
+    "Fixed db.startupProbe: was tcpSocket:9999 (nothing listens there in this image — caused an infinite restart loop in production), switched to exec pg_isready matching the existing livenessProbe.",
+  );
+  return true;
+}
+
 // Self-healing pre-pass: on any site that already hit runs of this tool
 // from before ensureProbeCoverage's duplicate-injection guard existed,
 // values.example.yaml can have TWO `<probeName>:` keys under the same
@@ -573,6 +633,18 @@ function ensureProbeCoverage(chartDir, rendered) {
         skipped.push(
           `${component}.${probeName}: already defined in values.example.yaml but not rendered — the chart template likely lacks the {{- with .Values.${component}.${probeName} }} capability block and needs a manual template edit, not another values injection`,
         );
+        continue;
+      }
+
+      // db's containerPort (9999) isn't something Postgres actually
+      // listens on — confirmed real production incident, see
+      // buildDbStartupProbeBlock. Never guess a port for it; mirror its
+      // known-working exec livenessProbe instead.
+      if (component === "db" && probeName === "startupProbe") {
+        const insertAt = findProbeInsertionPoint(lines, section.startIndex + 1, section.endIndex);
+        lines.splice(insertAt, 0, ...buildDbStartupProbeBlock(DB_STARTUP_FAILURE_THRESHOLD));
+        changed = true;
+        consoleUtils.success(`Injected startupProbe (exec pg_isready) for db into values.example.yaml`);
         continue;
       }
 
@@ -746,6 +818,7 @@ async function hardenSupabaseChart(askHelper) {
   ensureDbRecreateStrategy(chartDir);
   ensureDbSingleReplica(chartDir);
   ensureDbStartupProbeTemplateBlock(chartDir);
+  ensureDbStartupProbeUsesPgIsReady(chartDir);
   ensureRealtimeReadinessProbe(chartDir);
   ensureSteadyStateProbePeriod(chartDir);
   ensureDbStartupProbeWindow(chartDir);
