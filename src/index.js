@@ -101,8 +101,13 @@ async function runUpdateFlow(ask) {
         },
       ]));
 
-      if (deploymentTasks.includes("back")) {
+      // Only treat "back" as intentional when it's the sole selection —
+      // pressing "a" (toggle all) checks every choice including "back"
+      // itself, which must not discard a full select-all as a go-back.
+      if (deploymentTasks.length === 1 && deploymentTasks[0] === "back") {
         wentBack = true;
+      } else {
+        deploymentTasks = deploymentTasks.filter((t) => t !== "back");
       }
     }
 
@@ -130,8 +135,10 @@ async function runUpdateFlow(ask) {
         },
       ]));
 
-      if (cleanerTasks.includes("back")) {
+      if (cleanerTasks.length === 1 && cleanerTasks[0] === "back") {
         wentBack = true;
+      } else {
+        cleanerTasks = cleanerTasks.filter((t) => t !== "back");
       }
     }
 
