@@ -304,7 +304,12 @@ function findServiceDoc(rendered, resourceName) {
 function detectServicePort(rendered, component) {
   const doc = findServiceDoc(rendered, `visionx-supabase-${component}`);
   if (!doc) return null;
-  const match = doc.match(/^\s*port:\s*(\d+)\s*$/m);
+  // Service ports render as a YAML list item ("    - port: 9000"), not a
+  // bare key — the leading "-" must be matched (optionally) or this never
+  // matches at all (confirmed real case: functions/service.yaml). Anchored
+  // on "port:" specifically, not "targetPort:"/"nodePort:", since the "^"
+  // + optional "-" prefix requires "port:" to start immediately after it.
+  const match = doc.match(/^\s*-?\s*port:\s*(\d+)\s*$/m);
   return match ? match[1] : null;
 }
 
