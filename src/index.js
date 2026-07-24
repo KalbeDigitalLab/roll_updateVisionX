@@ -35,6 +35,18 @@ async function runRisIpConfiguration(ask) {
   consoleUtils.success("RIS IP Configuration Completed.");
 }
 
+async function confirmGoBack() {
+  const { back } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "back",
+      message: "Tidak ada proses dipilih. Kembali ke menu kategori?",
+      default: true,
+    },
+  ]);
+  return back;
+}
+
 async function runUpdateFlow(ask) {
   consoleUtils.title("Konfigurasi Proses Deployment");
 
@@ -95,19 +107,18 @@ async function runUpdateFlow(ask) {
             { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
             { name: "Harden Supabase Chart (Recreate + Probes)", value: "hardenSupabaseChart" },
             { name: "Trigger Analytics Log Cleanup + Vacuum Now", value: "triggerAnalyticsMaintenance" },
-            new inquirer.Separator(),
-            { name: "← Kembali ke Menu Kategori", value: "back" },
           ],
         },
       ]));
 
-      // Only treat "back" as intentional when it's the sole selection —
-      // pressing "a" (toggle all) checks every choice including "back"
-      // itself, which must not discard a full select-all as a go-back.
-      if (deploymentTasks.length === 1 && deploymentTasks[0] === "back") {
-        wentBack = true;
-      } else {
-        deploymentTasks = deploymentTasks.filter((t) => t !== "back");
+      // "back" used to be a checkbox item, but Inquirer's "a" (toggle all)
+      // shortcut checks EVERY item including it — no way to exclude one
+      // choice from that shortcut in the classic checkbox prompt, so it
+      // always looked selected after "a" even though the old code filtered
+      // it back out. Asking only when nothing real got picked removes the
+      // whole class of confusion instead of just working around it.
+      if (deploymentTasks.length === 0) {
+        wentBack = await confirmGoBack();
       }
     }
 
@@ -129,16 +140,12 @@ async function runUpdateFlow(ask) {
             { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
             { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
             { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
-            new inquirer.Separator(),
-            { name: "← Kembali ke Menu Kategori", value: "back" },
           ],
         },
       ]));
 
-      if (cleanerTasks.length === 1 && cleanerTasks[0] === "back") {
-        wentBack = true;
-      } else {
-        cleanerTasks = cleanerTasks.filter((t) => t !== "back");
+      if (cleanerTasks.length === 0) {
+        wentBack = await confirmGoBack();
       }
     }
 
