@@ -279,6 +279,53 @@ function detectContainerPort(doc) {
   return match ? match[1] : null;
 }
 
+// Extracts the exec command array from an existing `<probeName>:` block in
+// a rendered manifest doc, e.g. `exec: {command: [imgproxy, health]}` ->
+// ["imgproxy", "health"]. Returns null if that probe doesn't exist or
+// isn't exec-based. Bounded by indentation, same discipline as
+// extractProbeHandlers.
+function extractExecCommand(doc, probeName) {
+  const lines = doc.split("\n");
+  const startIndex = lines.findIndex((line) => new RegExp(`^(\\s*)${probeName}:\\s*$`).test(line));
+  if (startIndex === -1) return null;
+
+  const indent = lines[startIndex].match(/^(\s*)/)[1].length;
+  let end = lines.length;
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    if (lines[i].trim() === "") continue;
+    const curIndent = lines[i].match(/^(\s*)/)[1].length;
+    if (curIndent <= indent) { end = i; break; }
+  }
+
+  const execOffset = lines.slice(startIndex + 1, end).findIndex((l) => /^\s*exec:\s*$/.test(l));
+  if (execOffset === -1) return null;
+  const absExecIdx = startIndex + 1 + execOffset;
+
+  const commandOffset = lines.slice(absExecIdx + 1, end).findIndex((l) => /^\s*command:\s*$/.test(l));
+  if (commandOffset === -1) return null;
+  const absCommandIdx = absExecIdx + 1 + commandOffset;
+
+  const items = [];
+  for (let i = absCommandIdx + 1; i < end; i++) {
+    const m = lines[i].match(/^\s*-\s*(.+?)\s*$/);
+    if (!m) break;
+    items.push(m[1].replace(/^["']|["']$/g, ""));
+  }
+  return items.length > 0 ? items : null;
+}
+
+function buildExecProbeBlock(probeName, command, periodSeconds, failureThreshold) {
+  return [
+    `  ${probeName}:`,
+    `    exec:`,
+    `      command:`,
+    ...command.map((c) => `        - ${c}`),
+    `    periodSeconds: ${periodSeconds}`,
+    `    timeoutSeconds: 3`,
+    `    failureThreshold: ${failureThreshold}`,
+  ];
+}
+
 // Finds the rendered Service doc for a component, same name/header-match
 // discipline as findWorkloadDoc.
 function findServiceDoc(rendered, resourceName) {
@@ -584,6 +631,73 @@ function dedupeDuplicateProbeBlocks(chartDir) {
   return changed;
 }
 
+// Repairs a tcpSocket probe that was auto-injected before this fix existed
+// (confirmed real production case: imgproxy.readinessProbe tcpSocket:8080
+// got "connection refused" forever even though the app was demonstrably
+// healthy — its exec-based livenessProbe succeeded continuously the whole
+// time). Requires the RENDERED chart to find a sibling probe's working
+// exec command to mirror, so this runs after the first helm template pass,
+// same timing as ensureProbeCoverage. Only rewrites blocks that still use
+// tcpSocket — never touches an exec block, and never touches a tcpSocket
+// block if no sibling exec command exists to mirror (nothing to fix it
+// with, so it's left for checkProbeHandlerCollisions/pre-flight to catch
+// if it's actually broken).
+function ensureAutoInjectedProbesPreferExec(chartDir, rendered) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) return false;
+
+  let lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  let changed = false;
+
+  for (const component of Object.keys(PROBE_EXPECTATIONS)) {
+    const doc = findWorkloadDoc(rendered, `visionx-supabase-${component}`);
+    if (!doc) continue;
+
+    for (const probeName of ["startupProbe", "readinessProbe", "livenessProbe"]) {
+      const section = findComponentSection(lines, component);
+      if (!section) continue;
+
+      const blockStart = lines
+        .slice(section.startIndex, section.endIndex)
+        .findIndex((line) => new RegExp(`^ {2}${probeName}:\\s*$`).test(line));
+      if (blockStart === -1) continue;
+
+      const absoluteStart = section.startIndex + blockStart;
+      const blockEnd = findProbeBlockEnd(lines, absoluteStart, section.endIndex);
+      const blockText = lines.slice(absoluteStart, blockEnd).join("\n");
+      if (!/tcpSocket:/.test(blockText)) continue;
+
+      let siblingExec = null;
+      for (const other of ["livenessProbe", "readinessProbe", "startupProbe"]) {
+        if (other === probeName) continue;
+        const cmd = extractExecCommand(doc, other);
+        if (cmd) { siblingExec = cmd; break; }
+      }
+      if (!siblingExec) continue;
+
+      const failureMatch = blockText.match(/failureThreshold:\s*(\d+)/);
+      const periodMatch = blockText.match(/periodSeconds:\s*(\d+)/);
+      const failureThreshold = failureMatch ? failureMatch[1] : "3";
+      const periodSeconds = periodMatch ? periodMatch[1] : "60";
+
+      lines.splice(
+        absoluteStart,
+        blockEnd - absoluteStart,
+        ...buildExecProbeBlock(probeName, siblingExec, periodSeconds, failureThreshold),
+      );
+      changed = true;
+      consoleUtils.warn(
+        `Fixed ${component}.${probeName}: was tcpSocket (connection refused live — app likely binds loopback-only, or is unreachable from outside the pod's network namespace some other way), switched to exec matching its working sibling probe.`,
+      );
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  return changed;
+}
+
 // Auto-injects any required-but-missing probe (per PROBE_EXPECTATIONS)
 // into values.example.yaml, assuming the template already has the
 // `{{- with .Values.<component>.<probeType> }}` capability — confirmed
@@ -648,13 +762,39 @@ function ensureProbeCoverage(chartDir, rendered) {
         continue;
       }
 
+      // Prefer mirroring an already-working exec probe on a sibling probe
+      // type over guessing a TCP port — confirmed real production case:
+      // imgproxy's livenessProbe (exec: imgproxy health) succeeds
+      // continuously, but an auto-injected readinessProbe on
+      // tcpSocket:8080 got "connection refused" even though the app is
+      // demonstrably up and healthy (likely bound loopback-only, or
+      // blocked from outside the pod's network namespace some other way).
+      // An exec check runs inside the container itself, sidestepping
+      // that class of problem entirely.
+      let siblingExec = null;
+      for (const other of ["livenessProbe", "readinessProbe", "startupProbe"]) {
+        if (other === probeName) continue;
+        const cmd = extractExecCommand(doc, other);
+        if (cmd) { siblingExec = cmd; break; }
+      }
+
+      const insertAt = findProbeInsertionPoint(lines, section.startIndex + 1, section.endIndex);
+
+      if (siblingExec) {
+        const periodSeconds = probeName === "startupProbe" ? 5 : 60;
+        const failureThreshold = probeName === "startupProbe" ? 60 : 3;
+        lines.splice(insertAt, 0, ...buildExecProbeBlock(probeName, siblingExec, periodSeconds, failureThreshold));
+        changed = true;
+        consoleUtils.success(`Injected ${probeName} (exec: ${siblingExec.join(" ")}) for ${component} into values.example.yaml`);
+        continue;
+      }
+
       const port = detectContainerPort(doc) || detectServicePort(rendered, component);
       if (!port) {
         skipped.push(`${component}.${probeName}: could not detect containerPort or Service port in rendered chart`);
         continue;
       }
 
-      const insertAt = findProbeInsertionPoint(lines, section.startIndex + 1, section.endIndex);
       lines.splice(insertAt, 0, ...buildProbeBlock(probeName, port));
       changed = true;
       consoleUtils.success(`Injected ${probeName} (tcpSocket:${port}) for ${component} into values.example.yaml`);
@@ -832,8 +972,9 @@ async function hardenSupabaseChart(askHelper) {
     { cwd: chartDir },
   ).toString();
 
+  const healed = ensureAutoInjectedProbesPreferExec(chartDir, rendered);
   const injected = ensureProbeCoverage(chartDir, rendered);
-  if (injected) {
+  if (healed || injected) {
     consoleUtils.info("Re-rendering chart after probe injection...");
     rendered = execSync(
       "helm template visionx . -f values.example.yaml -n supabase",
