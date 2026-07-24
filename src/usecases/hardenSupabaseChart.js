@@ -104,6 +104,91 @@ function ensureDbRecreateStrategy(chartDir) {
   consoleUtils.success(`Injected strategy: Recreate into ${deploymentPath}`);
 }
 
+// db.autoscaling.enabled defaults to `true` in the chart's OWN values.yaml
+// (confirmed on the real VM: db.autoscaling: {enabled: true, minReplicas: 1,
+// maxReplicas: 100, ...} — nothing site-specific overrides it). The db
+// template only renders a `replicas:` line at all when
+// `{{- if not .Values.db.autoscaling.enabled }}` is true, so with the
+// chart's own default this field is silently OMITTED from the rendered
+// manifest rather than rendering something obviously wrong — which is
+// exactly what tripped the "db deployment does not have replicas: 1"
+// pre-flight check. An HPA-eligible singleton Postgres backed by hostPath
+// storage is the same class of problem strategy: Recreate exists to
+// prevent (two Postgres processes writing to the same hostPath at once).
+// Force both values explicitly into values.example.yaml (the file actually
+// passed via -f to every helm command), not values.yaml, matching every
+// other auto-injector in this file.
+function ensureDbSingleReplica(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) {
+    consoleUtils.warn(`${valuesPath} not found — skipping db single-replica override.`);
+    return false;
+  }
+
+  let lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  let changed = false;
+
+  function forceScalarUnderDb(key, desiredLine) {
+    const section = findComponentSection(lines, "db");
+    if (!section) return;
+    const idx = lines
+      .slice(section.startIndex, section.endIndex)
+      .findIndex((line) => new RegExp(`^ {2}${key}:\\s*\\S`).test(line));
+    if (idx === -1) {
+      lines.splice(section.startIndex + 1, 0, desiredLine);
+      changed = true;
+      consoleUtils.success(`Injected db.${key} into ${valuesPath}`);
+      return;
+    }
+    const absoluteIdx = section.startIndex + idx;
+    if (lines[absoluteIdx].trim() !== desiredLine.trim()) {
+      lines[absoluteIdx] = desiredLine;
+      changed = true;
+      consoleUtils.success(`Set db.${key} in ${valuesPath}`);
+    }
+  }
+
+  forceScalarUnderDb("replicaCount", "  replicaCount: 1");
+
+  const section = findComponentSection(lines, "db");
+  if (section) {
+    const autoscalingIdx = lines
+      .slice(section.startIndex, section.endIndex)
+      .findIndex((line) => /^ {2}autoscaling:\s*$/.test(line));
+
+    if (autoscalingIdx === -1) {
+      lines.splice(section.startIndex + 1, 0, "  autoscaling:", "    enabled: false");
+      changed = true;
+      consoleUtils.success(`Injected db.autoscaling.enabled: false into ${valuesPath}`);
+    } else {
+      const absoluteStart = section.startIndex + autoscalingIdx;
+      const blockEnd = findProbeBlockEnd(lines, absoluteStart, section.endIndex);
+      const enabledOffset = lines
+        .slice(absoluteStart + 1, blockEnd)
+        .findIndex((line) => /^\s*enabled:\s*\S/.test(line));
+
+      if (enabledOffset === -1) {
+        lines.splice(absoluteStart + 1, 0, "    enabled: false");
+        changed = true;
+        consoleUtils.success(`Injected db.autoscaling.enabled: false into ${valuesPath}`);
+      } else {
+        const absoluteEnabledIdx = absoluteStart + 1 + enabledOffset;
+        if (!/^\s*enabled:\s*false\s*$/.test(lines[absoluteEnabledIdx])) {
+          const indent = lines[absoluteEnabledIdx].match(/^(\s*)/)[1];
+          lines[absoluteEnabledIdx] = `${indent}enabled: false`;
+          changed = true;
+          consoleUtils.success(`Set db.autoscaling.enabled to false in ${valuesPath}`);
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  return changed;
+}
+
 // Realtime's readinessProbe/livenessProbe templates are already correctly
 // wired via `{{- with .Values.realtime.readinessProbe }}` (confirmed on
 // the real VM: templates/realtime/deployment.yaml:127-130), so the fix
@@ -509,6 +594,7 @@ async function hardenSupabaseChart(askHelper) {
   consoleUtils.info(`Using Supabase chart at: ${chartDir}`);
 
   ensureDbRecreateStrategy(chartDir);
+  ensureDbSingleReplica(chartDir);
   ensureRealtimeReadinessProbe(chartDir);
   ensureSteadyStateProbePeriod(chartDir);
   ensureDbStartupProbeWindow(chartDir);
