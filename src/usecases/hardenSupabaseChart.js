@@ -189,6 +189,52 @@ function ensureDbSingleReplica(chartDir) {
   return changed;
 }
 
+// db's Deployment template already wires livenessProbe/readinessProbe via
+// `{{- with .Values.db.<probe> }} ... {{- end }}` blocks (confirmed on the
+// real VM: templates/db/deployment.yaml:118-125), but has NO such block for
+// startupProbe at all. Auto-injecting startupProbe values into
+// values.example.yaml (ensureProbeCoverage, below) is a no-op no matter
+// what's in there — the template simply never emits the key — so this is a
+// genuine template edit, not a values patch, mirroring exactly the
+// reasoning ensureDbRecreateStrategy already uses for editing this same
+// file. Anchored on the existing livenessProbe `{{- with }}` line so the
+// new block lands with identical indentation/style, right before it.
+function ensureDbStartupProbeTemplateBlock(chartDir) {
+  const deploymentPath = path.join(chartDir, "templates", "db", "deployment.yaml");
+  if (!fs.existsSync(deploymentPath)) {
+    consoleUtils.warn(`${deploymentPath} not found — skipping db startupProbe template block injection.`);
+    return;
+  }
+
+  const content = fs.readFileSync(deploymentPath, "utf8");
+  if (content.includes(".Values.db.startupProbe")) {
+    consoleUtils.info("db deployment template already wires startupProbe from values.");
+    return;
+  }
+
+  const lines = content.split(/\r?\n/);
+  const anchorIndex = lines.findIndex((line) =>
+    /^\s*\{\{-\s*with\s+\.Values\.db\.livenessProbe\s*\}\}\s*$/.test(line),
+  );
+  if (anchorIndex === -1) {
+    throw new Error(
+      `Could not find "{{- with .Values.db.livenessProbe }}" in ${deploymentPath} to anchor the startupProbe template block injection — add it manually, matching the livenessProbe/readinessProbe block style already in that file.`,
+    );
+  }
+
+  const indent = lines[anchorIndex].match(/^(\s*)/)[1];
+  const block = [
+    `${indent}{{- with .Values.db.startupProbe }}`,
+    `${indent}startupProbe:`,
+    `${indent}  {{- toYaml . | nindent 12 }}`,
+    `${indent}{{- end }}`,
+  ];
+
+  lines.splice(anchorIndex, 0, ...block);
+  fs.writeFileSync(deploymentPath, lines.join("\n"), "utf8");
+  consoleUtils.success(`Injected {{- with .Values.db.startupProbe }} template block into ${deploymentPath}`);
+}
+
 // Realtime's readinessProbe/livenessProbe templates are already correctly
 // wired via `{{- with .Values.realtime.readinessProbe }}` (confirmed on
 // the real VM: templates/realtime/deployment.yaml:127-130), so the fix
@@ -230,6 +276,35 @@ function ensureRealtimeReadinessProbe(chartDir) {
 
 function detectContainerPort(doc) {
   const match = doc.match(/containerPort:\s*(\d+)/);
+  return match ? match[1] : null;
+}
+
+// Finds the rendered Service doc for a component, same name/header-match
+// discipline as findWorkloadDoc.
+function findServiceDoc(rendered, resourceName) {
+  const docs = rendered.split(/^---$/m);
+  return (
+    docs.find((doc) => {
+      const header = doc.split("\n").slice(0, 20).join("\n");
+      const isService = /^kind:\s*Service\s*$/m.test(header);
+      const nameMatches = new RegExp(`^\\s*name:\\s*${resourceName}\\s*$`, "m").test(header);
+      return isService && nameMatches;
+    }) || null
+  );
+}
+
+// Fallback for components whose container spec never declares a
+// containerPort at all — confirmed real case: `functions` (supabase/
+// edge-runtime), whose Deployment template has no `ports:` block, only its
+// Service does (`functions.service.port: 9000` in the chart's own
+// values.yaml). Kubernetes can only route Service traffic to a port the
+// pod is actually listening on, so the Service's declared port is a safe
+// stand-in for the probe port whenever the container spec itself is silent
+// about it.
+function detectServicePort(rendered, component) {
+  const doc = findServiceDoc(rendered, `visionx-supabase-${component}`);
+  if (!doc) return null;
+  const match = doc.match(/^\s*port:\s*(\d+)\s*$/m);
   return match ? match[1] : null;
 }
 
@@ -394,6 +469,56 @@ function ensureDbStartupProbeWindow(chartDir) {
   return changed;
 }
 
+// Self-healing pre-pass: on any site that already hit runs of this tool
+// from before ensureProbeCoverage's duplicate-injection guard existed,
+// values.example.yaml can have TWO `<probeName>:` keys under the same
+// component (confirmed real case: db.startupProbe, one stale
+// failureThreshold:60 block, one correct failureThreshold:120 block —
+// ensureProbeCoverage kept re-injecting because the rendered chart never
+// showed the probe, since the template itself lacked the capability
+// block). Field operators running this tool have no way to hand-fix
+// invalid duplicate YAML keys, so this runs first and repairs whatever's
+// already on disk automatically. Keeps the LAST occurrence of each
+// duplicate and drops the earlier one(s) — that's already what Helm's own
+// YAML-to-map unmarshaling does with duplicate keys today, so this only
+// makes that implicit behavior into valid, unambiguous YAML; it doesn't
+// change what actually gets applied.
+function dedupeDuplicateProbeBlocks(chartDir) {
+  const valuesPath = path.join(chartDir, "values.example.yaml");
+  if (!fs.existsSync(valuesPath)) return false;
+
+  let lines = fs.readFileSync(valuesPath, "utf8").split(/\r?\n/);
+  let changed = false;
+
+  for (const component of Object.keys(PROBE_EXPECTATIONS)) {
+    for (const probeName of ["startupProbe", "livenessProbe", "readinessProbe"]) {
+      for (;;) {
+        const section = findComponentSection(lines, component);
+        if (!section) break;
+
+        const indices = [];
+        for (let i = section.startIndex + 1; i < section.endIndex; i++) {
+          if (new RegExp(`^ {2}${probeName}:\\s*$`).test(lines[i])) indices.push(i);
+        }
+        if (indices.length <= 1) break;
+
+        const removeStart = indices[0];
+        const removeEnd = findProbeBlockEnd(lines, removeStart, section.endIndex);
+        lines.splice(removeStart, removeEnd - removeStart);
+        changed = true;
+        consoleUtils.warn(
+          `Removed a duplicate ${component}.${probeName} block from values.example.yaml left behind by an earlier run (kept the later one).`,
+        );
+      }
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(valuesPath, lines.join("\n"), "utf8");
+  }
+  return changed;
+}
+
 // Auto-injects any required-but-missing probe (per PROBE_EXPECTATIONS)
 // into values.example.yaml, assuming the template already has the
 // `{{- with .Values.<component>.<probeType> }}` capability — confirmed
@@ -427,9 +552,28 @@ function ensureProbeCoverage(chartDir, rendered) {
         continue;
       }
 
-      const port = detectContainerPort(doc);
+      // The rendered doc says this probe is missing, but if values.example.yaml
+      // ALREADY has a `${probeName}:` block for this component, injecting
+      // another one would create a duplicate YAML key rather than fixing
+      // anything — this happens when the chart template lacks the
+      // `{{- with .Values.<component>.<probeType> }}` capability block, so
+      // no values injection could ever make it render (confirmed real case:
+      // db.startupProbe piled up two duplicate blocks across repeated runs
+      // before the template itself was fixed). Surface it as a template gap
+      // instead of silently duplicating.
+      const alreadyInValues = lines
+        .slice(section.startIndex, section.endIndex)
+        .some((line) => new RegExp(`^ {2}${probeName}:\\s*$`).test(line));
+      if (alreadyInValues) {
+        skipped.push(
+          `${component}.${probeName}: already defined in values.example.yaml but not rendered — the chart template likely lacks the {{- with .Values.${component}.${probeName} }} capability block and needs a manual template edit, not another values injection`,
+        );
+        continue;
+      }
+
+      const port = detectContainerPort(doc) || detectServicePort(rendered, component);
       if (!port) {
-        skipped.push(`${component}.${probeName}: could not detect containerPort in rendered chart`);
+        skipped.push(`${component}.${probeName}: could not detect containerPort or Service port in rendered chart`);
         continue;
       }
 
@@ -593,8 +737,10 @@ async function hardenSupabaseChart(askHelper) {
 
   consoleUtils.info(`Using Supabase chart at: ${chartDir}`);
 
+  dedupeDuplicateProbeBlocks(chartDir);
   ensureDbRecreateStrategy(chartDir);
   ensureDbSingleReplica(chartDir);
+  ensureDbStartupProbeTemplateBlock(chartDir);
   ensureRealtimeReadinessProbe(chartDir);
   ensureSteadyStateProbePeriod(chartDir);
   ensureDbStartupProbeWindow(chartDir);
