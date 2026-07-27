@@ -31,6 +31,11 @@ class CheckboxWithBackPrompt extends CheckboxPrompt {
   onBackKey() {
     if (this.status === "answered") return;
 
+    // render() in the "answered" state reads this.selection, which is
+    // normally populated as a side effect of getCurrentValue() on the
+    // regular Enter-to-submit path. "b" skips that path entirely, so it
+    // has to be set here or render() crashes reading .join() off undefined.
+    this.selection = [];
     this.status = "answered";
     this.dontShowHints = true;
     this.render();
