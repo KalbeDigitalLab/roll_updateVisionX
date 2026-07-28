@@ -861,17 +861,20 @@ function checkProbeHandlerCollisions(rendered) {
   }
 }
 
-// Reads the live workload's first container (Deployment for most
+// Reads the live workload's kind + first container (Deployment for most
 // components, StatefulSet for db) straight from the cluster. Returns null
-// if neither kind exists yet (fresh install — nothing to drift from).
-function getLiveContainer(component) {
+// if neither kind exists yet (fresh install — nothing to drift from). Kind
+// is needed (not just the container) so a live-drift patch can target
+// `kubectl patch deployment` vs `kubectl patch statefulset` correctly.
+function getLiveWorkload(component) {
   const name = `visionx-supabase-${component}`;
   for (const kind of ["deployment", "statefulset"]) {
     try {
       const json = execSync(`kubectl get ${kind} ${name} -n supabase -o json`, {
         stdio: ["ignore", "pipe", "pipe"],
       }).toString();
-      return JSON.parse(json).spec.template.spec.containers[0];
+      const obj = JSON.parse(json);
+      return { kind, container: obj.spec.template.spec.containers[0] };
     } catch (err) {
       continue;
     }
@@ -892,32 +895,75 @@ function handlerTypeOf(probe) {
 // one — the API then rejects the merged object with "may not specify more
 // than 1 handler type". `kubectl apply --dry-run=server` doesn't catch this
 // because Server-Side Apply merges correctly; only the real `helm upgrade`
-// is exposed to it. Block-and-report only — this never mutates live cluster
-// state itself, matching every other check in this file.
-function checkLiveProbeDrift(rendered) {
+// is exposed to it.
+//
+// Unlike every other fix in this file, reconciling this ONE cannot be
+// folded into the silent auto-heal pass at the top of hardenSupabaseChart:
+// every other self-heal only edits the local chart files on disk, which
+// stay completely inert until the explicitly-confirmed `helm upgrade`
+// below actually runs (and even then `--atomic` can roll it back). A probe
+// removal here is a `kubectl patch` against the LIVE cluster object,
+// applied immediately, outside Helm's own transaction — if the tool died
+// between this patch and the helm upgrade that follows, the live object
+// would be left with that probe entirely missing, matching no Helm
+// revision at all, with no `--atomic` rollback to undo it. So each patch
+// still gets its own explicit y/n, same spirit as the final "run helm
+// upgrade?" gate, just scoped to one probe at a time.
+async function reconcileLiveProbeDrift(rendered, askHelper) {
   const drifted = [];
 
   for (const component of Object.keys(PROBE_EXPECTATIONS)) {
     const doc = findWorkloadDoc(rendered, `visionx-supabase-${component}`);
     if (!doc) continue;
 
-    const liveContainer = getLiveContainer(component);
-    if (!liveContainer) continue;
+    const live = getLiveWorkload(component);
+    if (!live) continue;
 
     for (const probeName of ["startupProbe", "livenessProbe", "readinessProbe"]) {
       const desiredHandler = (extractProbeHandlers(doc, probeName) || [])[0] || null;
-      const liveHandler = handlerTypeOf(liveContainer[probeName]);
+      const liveHandler = handlerTypeOf(live.container[probeName]);
       if (liveHandler && desiredHandler && liveHandler !== desiredHandler) {
-        drifted.push(
-          `${component}.${probeName}: live cluster has "${liveHandler}" but the chart now wants "${desiredHandler}" — helm's patch may add ${desiredHandler} without clearing ${liveHandler}, causing "Forbidden: may not specify more than 1 handler type". Reconcile first by removing the whole probe (never just the handler key — that leaves 0 handlers, which Kubernetes also rejects) and let helm add it back clean: kubectl patch deployment visionx-supabase-${component} -n supabase --type=json -p='[{"op":"remove","path":"/spec/template/spec/containers/0/${probeName}"}]'`,
-        );
+        drifted.push({ component, probeName, liveHandler, desiredHandler, kind: live.kind });
       }
     }
   }
 
-  if (drifted.length > 0) {
+  if (drifted.length === 0) return;
+
+  const unresolved = [];
+
+  for (const { component, probeName, liveHandler, desiredHandler, kind } of drifted) {
+    const patchCmd = `kubectl patch ${kind} visionx-supabase-${component} -n supabase --type=json -p='[{"op":"remove","path":"/spec/template/spec/containers/0/${probeName}"}]'`;
+
+    consoleUtils.warn(
+      `${component}.${probeName}: live cluster has "${liveHandler}" but the chart now wants "${desiredHandler}". ` +
+        `helm computes its upgrade patch by diffing its OWN release history, not the live object, so helm's patch ` +
+        `may add ${desiredHandler} without clearing ${liveHandler} — the API would then reject the merged object ` +
+        `with "Forbidden: may not specify more than 1 handler type". The whole probe block needs removing first ` +
+        `(never just the handler key — that leaves 0 handlers, which Kubernetes also rejects), then helm can add ` +
+        `it back clean on this run:\n  ${patchCmd}`,
+    );
+
+    const answer = await askHelper.ask(
+      `Run this patch now on the live cluster to reconcile ${component}.${probeName}? (y/n) `,
+    );
+
+    if (answer.toLowerCase() !== "y") {
+      unresolved.push(`${component}.${probeName}: left as-is by operator choice`);
+      continue;
+    }
+
+    try {
+      execSync(patchCmd, { stdio: "inherit" });
+      consoleUtils.success(`Patched ${component}.${probeName} on the live cluster — helm will add it back clean.`);
+    } catch (err) {
+      unresolved.push(`${component}.${probeName}: kubectl patch failed — ${err.message}`);
+    }
+  }
+
+  if (unresolved.length > 0) {
     throw new Error(
-      `Pre-flight check failed: live cluster probes have drifted from what helm tracks — helm upgrade would try to patch this and fail:\n  - ${drifted.join("\n  - ")}`,
+      `Pre-flight check failed: live cluster probes have drifted from what helm tracks and were not reconciled:\n  - ${unresolved.join("\n  - ")}`,
     );
   }
 }
@@ -1011,7 +1057,7 @@ async function hardenSupabaseChart(askHelper) {
 
   checkProbeCoverage(rendered);
   checkProbeHandlerCollisions(rendered);
-  checkLiveProbeDrift(rendered);
+  await reconcileLiveProbeDrift(rendered, askHelper);
 
   consoleUtils.success(
     "Pre-flight checks passed (db strategy/replicas, Realtime probes, required probe coverage, no multi-handler probes, no live/chart probe drift across all 12 components — auto-injecting any that were missing).",
