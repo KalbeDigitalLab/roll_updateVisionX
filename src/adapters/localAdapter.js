@@ -961,6 +961,55 @@ class LocalAdapter {
     }
   }
 
+  // Detects the failure mode behind the 2026-07-30 elvasoft-helper
+  // CrashLoopBackOff incident: a namespace was deployed with a pod spec that
+  // declares `imagePullSecrets: - name: regcred`, but nothing ever created
+  // that secret in the namespace (secrets are namespace-scoped, so regcred
+  // existing elsewhere doesn't help). Mirrors the pre-flight
+  // check/confirmation-gated-fix pattern in hardenSupabaseChart.js's
+  // reconcileLiveProbeDrift: detect live-cluster state, warn, ask before
+  // mutating the live cluster, and throw if the operator declines or the
+  // fix fails so the caller doesn't silently proceed.
+  async ensureRegcredSecret(namespace, sourceNamespace, askHelper) {
+    try {
+      await execCommand(`kubectl get namespace ${namespace}`);
+    } catch (err) {
+      return; // namespace not deployed yet — nothing to check
+    }
+
+    try {
+      await execCommand(`kubectl get secret regcred -n ${namespace} -o json`);
+      return; // secret already present
+    } catch (err) {
+      // fall through to fix
+    }
+
+    consoleUtils.warn(
+      `Namespace "${namespace}" has no "regcred" image-pull secret — secrets are namespace-scoped, so regcred existing elsewhere doesn't help. This is the same gap behind the 2026-07-30 elvasoft-helper CrashLoopBackOff incident.`,
+    );
+
+    const answer = await askHelper.ask(
+      `Copy regcred from "${sourceNamespace}" into "${namespace}" now? (y/n) `,
+    );
+
+    if (answer.toLowerCase() !== "y") {
+      throw new Error(
+        `Pre-flight check failed: namespace "${namespace}" is missing its regcred image-pull secret and it wasn't resolved.`,
+      );
+    }
+
+    try {
+      await execCommand(
+        `kubectl get secret regcred -n ${sourceNamespace} -o yaml | grep -v '^\\s*namespace:' | grep -v '^\\s*resourceVersion:' | grep -v '^\\s*uid:' | grep -v '^\\s*creationTimestamp:' | kubectl apply -n ${namespace} -f -`,
+      );
+      consoleUtils.success(`Copied regcred into "${namespace}".`);
+    } catch (err) {
+      throw new Error(
+        `Pre-flight check failed: copying regcred into "${namespace}" failed — ${err}`,
+      );
+    }
+  }
+
   async updateAndApplyFile(remoteFilename, imageVersion, askHelper, options = {}) {
     const fullPath = path.join(this.remoteBasePath, remoteFilename);
     const { optional = false } = options;

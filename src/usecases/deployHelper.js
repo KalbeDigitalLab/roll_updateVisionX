@@ -15,6 +15,42 @@ async function deployHelper(env) {
     fs.mkdirSync(basePath, { recursive: true });
   }
 
+  // Make namespace (Abaikan error jika sudah ada) — needed before the secret
+  // step below, since namespace creation otherwise only happens declaratively
+  // via the Namespace object in yamlContent, applied later.
+  try {
+    execSync("kubectl create namespace elvasoft-helper", { stdio: "ignore" });
+  } catch (e) {
+    /* ignore */
+  }
+
+  // Only create secret regcred if it isn't already there — check first
+  // instead of blind-create-and-ignore, so a real creation failure (e.g.
+  // /root/.docker/config.json missing/stale) surfaces instead of being
+  // silently swallowed alongside the harmless "already exists" case.
+  let regcredExists = true;
+  try {
+    execSync("kubectl get secret regcred -n elvasoft-helper", {
+      stdio: "ignore",
+    });
+  } catch (e) {
+    regcredExists = false;
+  }
+
+  if (!regcredExists) {
+    try {
+      execSync(
+        "kubectl create secret generic regcred --from-file=.dockerconfigjson=/root/.docker/config.json --type=kubernetes.io/dockerconfigjson -n elvasoft-helper",
+        { stdio: "ignore" },
+      );
+      consoleUtils.info("regcred secret created in elvasoft-helper.");
+    } catch (e) {
+      consoleUtils.warn(
+        "Failed to create regcred secret in elvasoft-helper — check /root/.docker/config.json exists on this host and is logged into the ACR registry.",
+      );
+    }
+  }
+
   const yamlContent = `apiVersion: v1
 kind: Namespace
 metadata:

@@ -40,6 +40,11 @@ async function deployYamlFiles(adapter, config, askHelper) {
       version: config.ELVASOFT_DICOM_PROXY_IMAGE_VERSION,
       optional: true,
     },
+    {
+      remote: config.ELVASOFT_HELPER_YAML_FILE,
+      version: config.ELVASOFT_HELPER_IMAGE_VERSION,
+      optional: true,
+    },
   ];
 
   for (const file of yamlFiles) {
@@ -47,6 +52,15 @@ async function deployYamlFiles(adapter, config, askHelper) {
       consoleUtils.info("YAML entry missing filename in env — skipped.");
       continue;
     }
+
+    if (file.remote === config.ELVASOFT_HELPER_YAML_FILE) {
+      await adapter.ensureRegcredSecret(
+        "elvasoft-helper",
+        "elvasoft-dicom-proxy",
+        askHelper,
+      );
+    }
+
     consoleUtils.section(`Image file: ${file.remote}`);
     await adapter.updateAndApplyFile(file.remote, file.version, askHelper, {
       optional: file.optional,
