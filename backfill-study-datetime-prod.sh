@@ -40,6 +40,10 @@
 #   Skip the fetch stage and reuse a CSV you already have:
 #     ./backfill-study-datetime-prod.sh --input-csv affected.csv
 #
+#   Apply one row at a time, confirming each write before moving on (with the option to
+#   switch to running the rest automatically once you trust the results):
+#     ./backfill-study-datetime-prod.sh --step
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +59,13 @@ BUG_INTRODUCED_AT="$DEFAULT_BUG_INTRODUCED_AT"
 BUG_FIXED_AT="now()"
 YES=0
 CONTINUE_ON_MISMATCH=0
+
+BATCH_SIZE=25
+BATCH_DELAY=5
+MAX_RETRIES=4
+RETRY_DELAY=2
+CURL_TIMEOUT=30
+STEP=0
 
 DB_NAMESPACE="supabase"
 DB_DEPLOY="deploy/visionx-supabase-db"
@@ -91,6 +102,21 @@ Common:
   --token TOKEN               Bearer token, only if dcm4chee requires auth.
   --yes                       Skip the interactive confirmation before applying writes.
   --continue-on-mismatch      Keep processing remaining rows after a verification mismatch.
+
+Throttling & retries (both DRY RUN and APPLY):
+  --batch-size N              Rows per batch before pausing (default: $BATCH_SIZE).
+  --batch-delay SECONDS       Pause between batches (default: $BATCH_DELAY).
+  --max-retries N             Retries per HTTP call on timeout/connection error/5xx
+                                (default: $MAX_RETRIES). 4xx responses are not retried.
+  --retry-delay SECONDS       Base delay before the first retry; doubles each attempt
+                                (default: $RETRY_DELAY).
+  --curl-timeout SECONDS      Per-request curl timeout (default: $CURL_TIMEOUT).
+
+Step mode:
+  --step                      APPLY one row at a time. After each write, pause and ask
+                                whether to continue one-by-one, run all remaining rows
+                                automatically, or quit. Lets you confirm the first few
+                                writes look right before trusting the rest to run.
 EOF
 }
 
@@ -107,6 +133,12 @@ while [[ $# -gt 0 ]]; do
     --cred-deploy) CRED_DEPLOY="$2"; shift 2 ;;
     --yes) YES=1; shift ;;
     --continue-on-mismatch) CONTINUE_ON_MISMATCH=1; shift ;;
+    --batch-size) BATCH_SIZE="$2"; shift 2 ;;
+    --batch-delay) BATCH_DELAY="$2"; shift 2 ;;
+    --max-retries) MAX_RETRIES="$2"; shift 2 ;;
+    --retry-delay) RETRY_DELAY="$2"; shift 2 ;;
+    --curl-timeout) CURL_TIMEOUT="$2"; shift 2 ;;
+    --step) STEP=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -184,11 +216,80 @@ strip_quotes() {
   printf '%s' "$s"
 }
 
+# GET with retry/backoff on curl failure (timeout, connection reset, DNS, etc) -
+# a non-2xx response also counts as failure via -f. Retries MAX_RETRIES times total.
+http_get_retry() {
+  local url="$1" attempt=1 out delay
+  while true; do
+    if out=$(curl -sf --max-time "$CURL_TIMEOUT" "${AUTH_HEADER[@]}" -H "Accept: application/dicom+json" "$url"); then
+      printf '%s' "$out"
+      return 0
+    fi
+    if [[ $attempt -ge $MAX_RETRIES ]]; then
+      return 1
+    fi
+    delay=$((RETRY_DELAY * (2 ** (attempt - 1))))
+    log "  GET failed, retry $attempt/$MAX_RETRIES in ${delay}s: $url"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+}
+
+# PUT with retry/backoff, but only on transient failures: curl-level errors (timeout,
+# connection reset) or 5xx (server overwhelmed). A 4xx is a client-side/data problem and
+# won't succeed on retry, so it's returned immediately. Sets http_code and resp_body.
+http_put_retry() {
+  local url="$1" payload="$2" attempt=1 delay resp_file
+  while true; do
+    resp_file=$(mktemp)
+    http_code=$(curl -s -o "$resp_file" -w '%{http_code}' --max-time "$CURL_TIMEOUT" -X PUT \
+      "${AUTH_HEADER[@]}" -H "Content-Type: application/json" "$url" -d "$payload")
+    resp_body=$(cat "$resp_file")
+    rm -f "$resp_file"
+
+    if [[ "$http_code" -lt 300 ]]; then
+      return 0
+    fi
+    if [[ "$http_code" -lt 500 || $attempt -ge $MAX_RETRIES ]]; then
+      return 1
+    fi
+    delay=$((RETRY_DELAY * (2 ** (attempt - 1))))
+    log "  PUT HTTP $http_code, retry $attempt/$MAX_RETRIES in ${delay}s: $url"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+}
+
+# Pause every BATCH_SIZE rows so a large run doesn't hammer the server continuously.
+batch_pause() {
+  local n="$1"
+  if (( BATCH_SIZE > 0 && n % BATCH_SIZE == 0 )); then
+    log "Batch pause: $n row(s) processed, sleeping ${BATCH_DELAY}s"
+    sleep "$BATCH_DELAY"
+  fi
+}
+
+# --step support: after each APPLY write outcome, ask the operator whether to continue.
+# STEP_AUTO=1 once the operator chooses "all", so remaining rows run without asking again.
+# STEP_QUIT=1 signals the APPLY loop to stop after the current row.
+STEP_AUTO=0
+STEP_QUIT=0
+step_confirm() {
+  local label="$1" choice
+  [[ $STEP -eq 1 && $STEP_AUTO -ne 1 ]] || return 0
+  echo
+  read -r -p "$label -- [c]ontinue one at a time, [a]ll remaining automatically, [q]uit now: " choice
+  case "$choice" in
+    a|A) STEP_AUTO=1; log "STEP: operator chose to run remaining rows automatically." ;;
+    q|Q) log "STEP: operator stopped after this row."; STEP_QUIT=1 ;;
+    *) : ;;
+  esac
+}
+
 fetch_current() {
   # sets: current_json, patient_id, cur_da, cur_tm, cur_acc, cur_desc, cur_ref, cur_clin
   local uid="$1"
-  current_json=$(curl -sf "${AUTH_HEADER[@]}" -H "Accept: application/dicom+json" \
-    "$BASE_URL/studies?StudyInstanceUID=$uid&includefield=$FIELD_LIST") || return 1
+  current_json=$(http_get_retry "$BASE_URL/studies?StudyInstanceUID=$uid&includefield=$FIELD_LIST") || return 1
   [[ "$(echo "$current_json" | jq 'length')" -gt 0 ]] || return 1
   patient_id=$(echo "$current_json" | jq -r '.[0]["00100020"].Value[0] // empty')
   [[ -n "$patient_id" ]] || return 1
@@ -203,8 +304,9 @@ fetch_current() {
 
 log "DRY RUN: previewing changes for $(($(wc -l < "$INPUT_CSV") - 1)) row(s), no writes yet"
 
-dry_processed=0; dry_skipped=0
+dry_processed=0; dry_skipped=0; dry_row_num=0
 while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm source_dt; do
+  dry_row_num=$((dry_row_num + 1))
   accession_no=$(strip_quotes "$accession_no")
   study_iuid=$(strip_quotes "$study_iuid")
   new_da=$(strip_quotes "$new_da")
@@ -213,12 +315,14 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
   if [[ -z "$new_da" || -z "$new_tm" ]]; then
     log "SKIP $accession_no ($study_iuid): no source exam date/time in CSV row - needs manual investigation."
     dry_skipped=$((dry_skipped + 1))
+    batch_pause "$dry_row_num"
     continue
   fi
 
   if ! fetch_current "$study_iuid"; then
     log "SKIP $accession_no ($study_iuid): study not found, empty response, or no PatientID - refusing to touch."
     dry_skipped=$((dry_skipped + 1))
+    batch_pause "$dry_row_num"
     continue
   fi
 
@@ -226,6 +330,7 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
   log "  Current:  StudyDate=$cur_da StudyTime=$cur_tm Accession=$cur_acc Desc=$cur_desc RefPhysician=$cur_ref Clinical=$cur_clin"
   log "  Proposed: StudyDate=$new_da StudyTime=$new_tm  (all other fields preserved as-is)"
   dry_processed=$((dry_processed + 1))
+  batch_pause "$dry_row_num"
 done < <(tail -n +2 "$INPUT_CSV")
 
 log "DRY RUN summary: previewed=$dry_processed skipped=$dry_skipped"
@@ -266,12 +371,14 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
 
   if [[ -z "$new_da" || -z "$new_tm" ]]; then
     skipped=$((skipped + 1))
+    batch_pause "$total"
     continue
   fi
 
   if ! fetch_current "$study_iuid"; then
     log "SKIP $accession_no ($study_iuid): study not found, empty response, or no PatientID at apply time."
     skipped=$((skipped + 1))
+    batch_pause "$total"
     continue
   fi
 
@@ -287,24 +394,19 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
       "001021B0": .[0]["001021B0"]
     }')
 
-  resp_file=$(mktemp)
-  http_code=$(curl -s -o "$resp_file" -w '%{http_code}' -X PUT \
-    "${AUTH_HEADER[@]}" -H "Content-Type: application/json" \
-    "$BASE_URL/studies/$study_iuid" -d "$payload")
-
-  if [[ "$http_code" -ge 300 ]]; then
-    log "WRITE FAILED $accession_no ($study_iuid) HTTP $http_code: $(cat "$resp_file")"
-    rm -f "$resp_file"
+  if ! http_put_retry "$BASE_URL/studies/$study_iuid" "$payload"; then
+    log "WRITE FAILED $accession_no ($study_iuid) HTTP $http_code: $resp_body"
     if [[ $CONTINUE_ON_MISMATCH -ne 1 ]]; then
       log "Stopping (pass --continue-on-mismatch to keep going)."
       break
     fi
+    step_confirm "Row $total: $accession_no ($study_iuid) - WRITE FAILED"
+    batch_pause "$total"
+    [[ $STEP_QUIT -eq 1 ]] && break
     continue
   fi
-  rm -f "$resp_file"
 
-  after_json=$(curl -sf "${AUTH_HEADER[@]}" -H "Accept: application/dicom+json" \
-    "$BASE_URL/studies?StudyInstanceUID=$study_iuid&includefield=$FIELD_LIST")
+  after_json=$(http_get_retry "$BASE_URL/studies?StudyInstanceUID=$study_iuid&includefield=$FIELD_LIST") || after_json='[]'
   after_da=$(echo "$after_json"   | jq -r '.[0]["00080020"].Value[0] // empty')
   after_tm=$(echo "$after_json"   | jq -r '.[0]["00080030"].Value[0] // empty')
   after_acc=$(echo "$after_json"  | jq -r '.[0]["00080050"].Value[0] // empty')
@@ -319,6 +421,7 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
   if [[ $ok -eq 1 ]]; then
     log "OK $accession_no ($study_iuid): StudyDate/StudyTime backfilled and verified."
     applied=$((applied + 1))
+    step_confirm "Row $total: $accession_no ($study_iuid) - OK"
   else
     log "MISMATCH $accession_no ($study_iuid) after write! Accession=$after_acc Desc=$after_desc DA=$after_da TM=$after_tm"
     mismatches=$((mismatches + 1))
@@ -326,7 +429,10 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
       log "Stopping due to mismatch (pass --continue-on-mismatch to keep going after review)."
       break
     fi
+    step_confirm "Row $total: $accession_no ($study_iuid) - MISMATCH"
   fi
+  batch_pause "$total"
+  [[ $STEP_QUIT -eq 1 ]] && break
 done < <(tail -n +2 "$INPUT_CSV")
 
 log "==== Summary: total_rows=$total applied=$applied skipped=$skipped mismatches=$mismatches ===="
