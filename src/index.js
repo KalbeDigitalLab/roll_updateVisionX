@@ -23,6 +23,7 @@ inquirer.registerPrompt("checkboxWithBack", CheckboxWithBackPrompt);
 // Import cleaner
 const recountInstances = require("./cleaner/recount_instances");
 const backfillStarted = require("./cleaner/backfill_started");
+const runBackfillStudyDatetime = require("./cleaner/backfill_study_datetime");
 const runPatientMerge = require("./cleaner/multiplePatient.js");
 const cleanMwlStatus = require("./cleaner/clean_mwl_status");
 const runPatientCleanupSQL = require("./usecases/runPatientCleanupSQL");
@@ -143,6 +144,7 @@ async function runUpdateFlow(ask) {
           choices: [
             { name: "Cleaner: Recount Instances", value: "recount" },
             { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
+            { name: "Cleaner: Backfill Study Date/Time (dcm4chee, dry run + APPLY confirm)", value: "backfillStudyDatetime" },
             { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
             { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
             { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
@@ -181,6 +183,7 @@ async function runUpdateFlow(ask) {
   const runTriggerAnalyticsMaintenance = selectedTasks.includes("triggerAnalyticsMaintenance") ? "y" : "n";
   const runRecount = selectedTasks.includes("recount") ? "y" : "n";
   const runBackfillStarted = selectedTasks.includes("backfillStarted") ? "y" : "n";
+  const runStudyDatetime = selectedTasks.includes("backfillStudyDatetime") ? "y" : "n";
   const runMerge = selectedTasks.includes("patientMerge") ? "y" : "n";
   const runCleanMwlStatus = selectedTasks.includes("cleanMwlStatus") ? "y" : "n";
   const runDeleteFhir = selectedTasks.includes("deleteFhir") ? "y" : "n";
@@ -323,6 +326,14 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("Cleaner Process (Backfill started) Completed.");
   } else {
     consoleUtils.skipped("Skipping Cleaner (Backfill started) process.");
+  }
+
+  if (runStudyDatetime.toLowerCase() === "y") {
+    consoleUtils.section("Cleaner Process (Backfill Study Date/Time)");
+    await runBackfillStudyDatetime();
+    consoleUtils.success("Cleaner Process (Backfill Study Date/Time) Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Cleaner (Backfill Study Date/Time) process.");
   }
 
   if (runMerge.toLowerCase() === "y") {
