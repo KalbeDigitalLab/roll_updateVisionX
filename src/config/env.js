@@ -36,6 +36,9 @@ const env = {
   SUPABASE_PASSWORD: process.env.SUPABASE_PASSWORD,
   SUPABASE_URL: process.env.SUPABASE_URL,
   SUPABASE_KEY: process.env.SUPABASE_KEY,
+  REALTIME_DEPLOYMENT_NAME:
+    process.env.REALTIME_DEPLOYMENT_NAME || "visionx-supabase-realtime",
+  REALTIME_NAMESPACE: process.env.REALTIME_NAMESPACE || "supabase",
 
   // Mirth
   MIRTH_HOST: process.env.MIRTH_HOST,

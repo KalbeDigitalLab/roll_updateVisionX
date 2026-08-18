@@ -12,6 +12,7 @@ const deployDicomSend = require("./usecases/deployDicomSend");
 const increaseSupabaseLimit = require("./usecases/increaseSupabaseLimit");
 const hardenSupabaseChart = require("./usecases/hardenSupabaseChart");
 const triggerAnalyticsMaintenance = require("./usecases/triggerAnalyticsMaintenance");
+const fixRealtimeMissingTenant = require("./usecases/fixRealtimeMissingTenant");
 const deleteFhirByAccession = require("./cleaner/delete_fhir_by_accession");
 const AskHelper = require("./utils/readline");
 const consoleUtils = require("./utils/consoleUtils");
@@ -110,6 +111,7 @@ async function runUpdateFlow(ask) {
             { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
             { name: "Harden Supabase Chart (Recreate + Probes)", value: "hardenSupabaseChart" },
             { name: "Trigger Analytics Log Cleanup + Vacuum Now", value: "triggerAnalyticsMaintenance" },
+            { name: "Fix Supabase Realtime Missing Tenant (check + fix + restart)", value: "fixRealtimeTenant" },
           ],
         },
       ]));
@@ -179,6 +181,7 @@ async function runUpdateFlow(ask) {
   const runSupabaseLimit = selectedTasks.includes("supabaseLimit") ? "y" : "n";
   const runHardenSupabaseChart = selectedTasks.includes("hardenSupabaseChart") ? "y" : "n";
   const runTriggerAnalyticsMaintenance = selectedTasks.includes("triggerAnalyticsMaintenance") ? "y" : "n";
+  const runFixRealtimeTenant = selectedTasks.includes("fixRealtimeTenant") ? "y" : "n";
   const runRecount = selectedTasks.includes("recount") ? "y" : "n";
   const runBackfillStarted = selectedTasks.includes("backfillStarted") ? "y" : "n";
   const runMerge = selectedTasks.includes("patientMerge") ? "y" : "n";
@@ -307,6 +310,21 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("Analytics Log Cleanup + Vacuum Completed.");
   } else {
     consoleUtils.skipped("Skipping Analytics Log Cleanup + Vacuum.");
+  }
+
+  if (runFixRealtimeTenant.toLowerCase() === "y") {
+    consoleUtils.section("Fix Supabase Realtime Missing Tenant");
+    const db = new DBAdapter(env);
+    const local = new LocalAdapter(env);
+    await db.connect();
+    try {
+      await fixRealtimeMissingTenant(db, local, env);
+    } finally {
+      await db.disconnect();
+    }
+    consoleUtils.success("Fix Supabase Realtime Missing Tenant Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Fix Supabase Realtime Missing Tenant.");
   }
 
   if (runRecount.toLowerCase() === "y") {
