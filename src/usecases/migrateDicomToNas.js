@@ -312,14 +312,30 @@ async function preflightNfsCheck(localAdapter, params) {
   consoleUtils.success("NFS share bisa di-mount dan ditulis — Step 1 (setup DSM) sudah benar.");
 }
 
-async function rsyncExistingData(localAdapter, params) {
+async function rsyncExistingData(localAdapter, params, askHelper) {
   consoleUtils.section("Step 2/6: Mount NAS & rsync data DICOM existing");
+
+  const doRsync = (
+    await askHelper.ask(
+      "Lakukan rsync data DICOM existing ke NAS sekarang? (Y/n — jawab 'n' kalau data sudah/akan " +
+        "dipindahkan sendiri, mis. oleh pihak rumah sakit saat ganti NAS): ",
+    )
+  )
+    .trim()
+    .toLowerCase();
+
+  if (doRsync === "n") {
+    consoleUtils.skipped(
+      "Rsync dilewati atas pilihan operator — pastikan data DICOM sudah/akan ada di NAS sebelum lanjut switch storage.",
+    );
+    return false;
+  }
 
   if (!isDryRun() && !fs.existsSync(params.localDicomPath)) {
     consoleUtils.warn(
       `${params.localDicomPath} tidak ditemukan di VM ini — tidak ada data existing untuk di-rsync, lanjut tanpa migrasi data.`,
     );
-    return;
+    return false;
   }
 
   await runBuffered(localAdapter, `mkdir -p ${RSYNC_MOUNT_POINT}`);
@@ -344,6 +360,39 @@ async function rsyncExistingData(localAdapter, params) {
 
   await runBuffered(localAdapter, `umount ${RSYNC_MOUNT_POINT}`);
   consoleUtils.success("Rsync data DICOM ke NAS selesai, mount sementara dilepas.");
+  return true;
+}
+
+// Only ever offered when rsync actually ran THIS run (not skipped, not a
+// no-op from a missing source dir) — otherwise there is no basis for
+// believing the data is safely on the NAS. Uses a typed "hapus" confirmation
+// instead of the plain y/n used everywhere else in this flow: unlike every
+// other step here (manifests are backed up, PVC/PV deletion never touches
+// data already copied, scale down/up is reversible), this is the one
+// genuinely irreversible action against patient DICOM data.
+async function cleanupLocalDicom(localAdapter, params, askHelper) {
+  consoleUtils.section("Cleanup Data DICOM Lokal (opsional)");
+  consoleUtils.warn(
+    `Ini akan MENGHAPUS PERMANEN folder lokal ${params.localDicomPath} dari VM ini untuk membebaskan disk. ` +
+      "Pastikan Step 6 (upload test + retrieval via OHIF dari NAS) sudah Anda verifikasi berhasil dulu sebelum " +
+      "menghapus — data DICOM pasien di sini tidak bisa dikembalikan lagi kalau ternyata belum aman di NAS.",
+  );
+
+  const answer = (
+    await askHelper.ask(
+      `Ketik persis "hapus" untuk menghapus ${params.localDicomPath} sekarang, atau Enter untuk lewati (hapus manual nanti): `,
+    )
+  ).trim();
+
+  if (answer !== "hapus") {
+    consoleUtils.skipped(
+      `Cleanup dilewati — ${params.localDicomPath} TIDAK dihapus, masih ada di VM ini sampai dihapus manual.`,
+    );
+    return;
+  }
+
+  await runBuffered(localAdapter, `rm -rf ${params.localDicomPath}`);
+  consoleUtils.success(`${params.localDicomPath} berhasil dihapus dari VM ini.`);
 }
 
 function buildNfsStorageManifest(params) {
@@ -717,7 +766,7 @@ async function migrateDicomToNas(localAdapter, env, askHelper) {
   const params = await collectParams(env, askHelper);
 
   await preflightNfsCheck(localAdapter, params);
-  await rsyncExistingData(localAdapter, params);
+  const rsyncPerformed = await rsyncExistingData(localAdapter, params, askHelper);
 
   const nfsYamlPath = writeNfsStorageManifest(env, params);
   const arcYamlPath = writeArcManifest(localAdapter, env, params);
@@ -730,6 +779,14 @@ async function migrateDicomToNas(localAdapter, env, askHelper) {
   await verifyStorage(localAdapter, params);
   await reloadOhif(localAdapter, params, askHelper);
   printManualChecklist(params);
+
+  if (rsyncPerformed) {
+    await cleanupLocalDicom(localAdapter, params, askHelper);
+  } else {
+    consoleUtils.info(
+      `Rsync tidak dijalankan di run ini — lewati opsi cleanup, ${params.localDicomPath} TIDAK disentuh sama sekali.`,
+    );
+  }
 
   consoleUtils.success("Migrasi DICOM storage ke NAS selesai.");
 }
