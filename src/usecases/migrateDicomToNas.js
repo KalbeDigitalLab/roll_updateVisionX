@@ -69,6 +69,101 @@ async function promptWithDefault(askHelper, question, defaultValue) {
   return answer || defaultValue || "";
 }
 
+// Tries the known-good default (namespace dcm4chee / Deployment arc, per
+// visionx-vault's confirmed architecture) against the live cluster first —
+// only falls back to asking if that specific lookup fails (kubectl
+// unreachable, or this site genuinely uses different names).
+async function detectOrAskArcTarget(askHelper) {
+  const candidateNamespace = "dcm4chee";
+  const candidateDeployment = "arc";
+
+  try {
+    execSync(`kubectl get deployment ${candidateDeployment} -n ${candidateNamespace} -o name`, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    consoleUtils.success(
+      `Terdeteksi Deployment dcm4chee-arc: ${candidateDeployment} (namespace ${candidateNamespace}).`,
+    );
+    return { namespace: candidateNamespace, deployment: candidateDeployment };
+  } catch (err) {
+    consoleUtils.warn(
+      `Tidak bisa auto-detect Deployment ${candidateDeployment} di namespace ${candidateNamespace} ` +
+        "(kubectl tidak reachable dari sini, atau namanya memang beda) — isi manual.",
+    );
+    const namespace = await promptWithDefault(askHelper, "Namespace dcm4chee-arc", candidateNamespace);
+    const deployment = await promptWithDefault(askHelper, "Nama Deployment dcm4chee-arc", candidateDeployment);
+    return { namespace, deployment };
+  }
+}
+
+// Reads the LIVE Deployment spec to find whatever volume is actually mounted
+// at /storage today — hostPath (matches the current production setup per
+// visionx-vault) or an existing PVC — instead of guessing at fixed names.
+// Returns null (never throws) if kubectl is unreachable or the deployment
+// doesn't exist yet, so callers always have a safe manual-entry fallback.
+function detectCurrentStorage(namespace, deployment) {
+  try {
+    const json = execSync(`kubectl get deployment ${deployment} -n ${namespace} -o json`, {
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+    const obj = JSON.parse(json);
+    const containers = obj.spec.template.spec.containers || [];
+
+    let mount = null;
+    for (const c of containers) {
+      mount = (c.volumeMounts || []).find((vm) => vm.mountPath === "/storage");
+      if (mount) break;
+    }
+    if (!mount) return null;
+
+    const volume = (obj.spec.template.spec.volumes || []).find((v) => v.name === mount.name);
+    if (!volume) return null;
+
+    if (volume.hostPath && volume.hostPath.path) {
+      return { type: "hostPath", path: volume.hostPath.path };
+    }
+
+    if (volume.persistentVolumeClaim && volume.persistentVolumeClaim.claimName) {
+      const pvcName = volume.persistentVolumeClaim.claimName;
+      let pvName = "";
+      try {
+        pvName = execSync(`kubectl get pvc ${pvcName} -n ${namespace} -o jsonpath={.spec.volumeName}`, {
+          stdio: ["ignore", "pipe", "pipe"],
+        })
+          .toString()
+          .trim();
+      } catch (_) {
+        // PVC exists but PV lookup failed — leave blank, deploySwitch will
+        // just skip the "kubectl delete pv" step for an empty name.
+      }
+      return { type: "pvc", pvcName, pvName };
+    }
+
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Looks for exactly one "*arc*.yaml" file in LOCAL_BASE_PATH that isn't the
+// NFS storage manifest this usecase itself writes. Ambiguous (0 or 2+
+// matches) falls back to asking rather than guessing wrong.
+function detectArcYamlFile(basePath) {
+  try {
+    if (!basePath || !fs.existsSync(basePath)) return null;
+    const candidates = fs
+      .readdirSync(basePath)
+      .filter((f) => /arc/i.test(f) && /\.ya?ml$/i.test(f) && !/nfs-storage/i.test(f));
+    if (candidates.length === 1) {
+      consoleUtils.success(`Terdeteksi manifest arc: ${candidates[0]}`);
+      return candidates[0];
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function collectParams(env, askHelper) {
   consoleUtils.section("Konfigurasi Migrasi NAS");
 
@@ -81,42 +176,97 @@ async function collectParams(env, askHelper) {
     throw new Error("NAS_IP wajib diisi — migrasi dibatalkan.");
   }
 
+  // Tidak bisa di-auto-detect — di luar cluster, tidak ada API untuk ini.
   const sharePath = await promptWithDefault(askHelper, "Share path di NAS", "/volume1/PACS");
-  const namespace = await promptWithDefault(askHelper, "Namespace dcm4chee-arc", "dcm4chee");
-  const deployment = await promptWithDefault(askHelper, "Nama Deployment dcm4chee-arc", "arc");
-  const localDicomPath = await promptWithDefault(
-    askHelper,
-    "Path data DICOM lokal existing (hostPath) untuk di-rsync",
-    "/home/data/dcm4chee/arc/fs1/",
-  );
-  const pvName = await promptWithDefault(askHelper, "Nama PersistentVolume baru", "arc-nfs-pv");
-  const pvcName = await promptWithDefault(askHelper, "Nama PersistentVolumeClaim baru", "arc-nfs-pvc");
-  const storageClass = await promptWithDefault(askHelper, "Nama StorageClass", "arc-nfs-storage");
-  const storageSize = await promptWithDefault(askHelper, "Ukuran storage", "1Ti");
-  const oldPvcName = await promptWithDefault(askHelper, "Nama PVC lama (hostPath) yang akan dihapus", "arc-pvc");
-  const oldPvName = await promptWithDefault(askHelper, "Nama PV lama (hostPath) yang akan dihapus", "arc-pv");
-  const ohifLabelSelector = await promptWithDefault(
-    askHelper,
-    "Label selector pod OHIF untuk direstart setelah migrasi",
-    "app=ohif",
-  );
+
+  const { namespace, deployment } = await detectOrAskArcTarget(askHelper);
+  const storageInfo = detectCurrentStorage(namespace, deployment);
+
+  let localDicomPath;
+  let oldPvcName = "";
+  let oldPvName = "";
+
+  if (storageInfo && storageInfo.type === "hostPath") {
+    consoleUtils.success(
+      `Terdeteksi storage /storage saat ini: hostPath ${storageInfo.path} (bukan PVC — tidak ada PVC/PV lama untuk dihapus).`,
+    );
+    localDicomPath = await promptWithDefault(
+      askHelper,
+      "Path data DICOM lokal existing untuk di-rsync",
+      path.join(storageInfo.path, "fs1").replace(/\\/g, "/") + "/",
+    );
+  } else if (storageInfo && storageInfo.type === "pvc") {
+    consoleUtils.success(
+      `Terdeteksi storage /storage saat ini: PVC ${storageInfo.pvcName}` +
+        (storageInfo.pvName ? ` (PV ${storageInfo.pvName})` : "") +
+        " — ini yang akan dihapus & diganti.",
+    );
+    oldPvcName = storageInfo.pvcName;
+    oldPvName = storageInfo.pvName;
+    localDicomPath = await promptWithDefault(
+      askHelper,
+      "Path data DICOM lokal existing untuk di-rsync",
+      "/home/data/dcm4chee/arc/fs1/",
+    );
+  } else {
+    consoleUtils.warn(
+      "Tidak bisa auto-detect storage /storage saat ini (kubectl tidak reachable, atau deployment belum ada) — isi manual.",
+    );
+    localDicomPath = await promptWithDefault(
+      askHelper,
+      "Path data DICOM lokal existing (hostPath) untuk di-rsync",
+      "/home/data/dcm4chee/arc/fs1/",
+    );
+    oldPvcName = await promptWithDefault(
+      askHelper,
+      "Nama PVC lama yang akan dihapus (kosongkan Enter jika tidak ada/tidak yakin)",
+      "",
+    );
+    oldPvName = await promptWithDefault(
+      askHelper,
+      "Nama PV lama yang akan dihapus (kosongkan Enter jika tidak ada/tidak yakin)",
+      "",
+    );
+  }
+
+  // Nama resource NFS baru — belum ada apa pun untuk dideteksi, jadi pakai
+  // default standar diam-diam kecuali operator eksplisit mau custom.
+  let pvName = "arc-nfs-pv";
+  let pvcName = "arc-nfs-pvc";
+  let storageClass = "arc-nfs-storage";
+  let storageSize = "1Ti";
+  let nfsStorageYamlFile = "06-arc-nfs-storage.yaml";
+
+  const wantCustomNames = (
+    await askHelper.ask(
+      `Pakai nama resource NFS baru default (PV=${pvName}, PVC=${pvcName}, StorageClass=${storageClass}, size=${storageSize})? (Y/n): `,
+    )
+  )
+    .trim()
+    .toLowerCase();
+
+  if (wantCustomNames === "n") {
+    pvName = await promptWithDefault(askHelper, "Nama PersistentVolume baru", pvName);
+    pvcName = await promptWithDefault(askHelper, "Nama PersistentVolumeClaim baru", pvcName);
+    storageClass = await promptWithDefault(askHelper, "Nama StorageClass", storageClass);
+    storageSize = await promptWithDefault(askHelper, "Ukuran storage", storageSize);
+    nfsStorageYamlFile = await promptWithDefault(askHelper, "Nama file manifest PV/PVC NFS baru", nfsStorageYamlFile);
+  }
+
+  const ohifLabelSelector = "app=ohif";
 
   let arcYamlFile = env.DCM4CHEE_YAML_FILE;
   if (!arcYamlFile) {
-    arcYamlFile = await promptWithDefault(
-      askHelper,
-      "Nama file manifest Deployment arc (relatif ke LOCAL_BASE_PATH)",
-      "04-arc.yaml",
-    );
+    arcYamlFile =
+      detectArcYamlFile(env.LOCAL_BASE_PATH) ||
+      (await promptWithDefault(
+        askHelper,
+        "Nama file manifest Deployment arc (relatif ke LOCAL_BASE_PATH)",
+        "04-arc.yaml",
+      ));
   } else {
     consoleUtils.info(`Menggunakan DCM4CHEE_YAML_FILE dari config: ${arcYamlFile}`);
   }
-
-  const nfsStorageYamlFile = await promptWithDefault(
-    askHelper,
-    "Nama file manifest PV/PVC NFS baru",
-    "06-arc-nfs-storage.yaml",
-  );
 
   return {
     nasIp,
@@ -442,9 +592,12 @@ async function deploySwitch(localAdapter, params, nfsYamlPath, arcYamlPath, askH
       ? "DRY_RUN aktif — langkah berikut HANYA akan dicetak, tidak dieksekusi ke cluster."
       : "DRY_RUN TIDAK aktif — langkah berikut akan BENAR-BENAR dieksekusi ke cluster.",
   );
+  const oldStorageNote = params.oldPvcName
+    ? `hapus PVC/PV lama (${params.oldPvcName}${params.oldPvName ? `/${params.oldPvName}` : ""}), `
+    : "";
   consoleUtils.warn(
-    `Proses ini akan men-downtime-kan PACS sebentar: scale down ${params.deployment}, hapus PVC/PV lama ` +
-      `(${params.oldPvcName}/${params.oldPvName}), apply storage NFS baru, lalu scale up kembali.`,
+    `Proses ini akan men-downtime-kan PACS sebentar: scale down ${params.deployment}, ${oldStorageNote}` +
+      "apply storage NFS baru, lalu scale up kembali.",
   );
   const confirm = await askHelper.ask("Lanjutkan? (y/n) ");
   if (confirm.toLowerCase() !== "y") {
@@ -455,8 +608,21 @@ async function deploySwitch(localAdapter, params, nfsYamlPath, arcYamlPath, askH
   }
 
   await runBuffered(localAdapter, `kubectl -n ${params.namespace} scale deployment ${params.deployment} --replicas=0`);
-  await runBuffered(localAdapter, `kubectl -n ${params.namespace} delete pvc ${params.oldPvcName} --ignore-not-found=true`);
-  await runBuffered(localAdapter, `kubectl delete pv ${params.oldPvName} --ignore-not-found=true`);
+
+  if (params.oldPvcName) {
+    await runBuffered(
+      localAdapter,
+      `kubectl -n ${params.namespace} delete pvc ${params.oldPvcName} --ignore-not-found=true`,
+    );
+  } else {
+    consoleUtils.info("Tidak ada PVC lama terdeteksi/diisi — lewati kubectl delete pvc.");
+  }
+
+  if (params.oldPvName) {
+    await runBuffered(localAdapter, `kubectl delete pv ${params.oldPvName} --ignore-not-found=true`);
+  } else {
+    consoleUtils.info("Tidak ada PV lama terdeteksi/diisi — lewati kubectl delete pv.");
+  }
 
   await runBuffered(localAdapter, `kubectl apply -f ${nfsYamlPath}`);
   await runBuffered(localAdapter, `kubectl apply -f ${arcYamlPath}`);
