@@ -103,6 +103,7 @@ async function runUpdateFlow(ask) {
             { name: "Update Image", value: "image" },
             { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
             { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
+            { name: "RIS Resource Limits (memory/cpu + NODE_OPTIONS, ris.yaml & ris-v1.yaml)", value: "risResourceLimits" },
             { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
             { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
             { name: "Migrate DICOM Storage to NAS (NFS)", value: "migrateDicomNas" },
@@ -174,6 +175,7 @@ async function runUpdateFlow(ask) {
   const runSsh = selectedTasks.includes("image") ? "y" : "n";
   const runRisDicomProxyEnv = selectedTasks.includes("risDicomProxyEnv") ? "y" : "n";
   const runRisReadinessProbe = selectedTasks.includes("risReadinessProbe") ? "y" : "n";
+  const runRisResourceLimits = selectedTasks.includes("risResourceLimits") ? "y" : "n";
   const runDcm4cheeProbes = selectedTasks.includes("dcm4cheeProbes") ? "y" : "n";
   const runDcm4cheePostgresEnv = selectedTasks.includes("dcm4cheePostgresEnv") ? "y" : "n";
   const runMigrateDicomNas = selectedTasks.includes("migrateDicomNas") ? "y" : "n";
@@ -230,6 +232,17 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("RIS ReadinessProbe Update Completed.");
   } else {
     consoleUtils.skipped("Skipping RIS ReadinessProbe Update process.");
+  }
+
+  if (runRisResourceLimits.toLowerCase() === "y") {
+    consoleUtils.section("RIS Resource Limits Update");
+    const local = new LocalAdapter(env);
+    await local.ensureRisResourceLimits(env.RIS_YAML_FILE);
+    await local.ensureRisResourceLimits(env.RIS_V1_YAML_FILE);
+    local.syncRisTemplateFromYaml(env.RIS_YAML_FILE, env.RIS_YAML_TEMPLATE_FILE);
+    consoleUtils.success("RIS Resource Limits Update Completed.");
+  } else {
+    consoleUtils.skipped("Skipping RIS Resource Limits Update process.");
   }
 
   if (runDcm4cheeProbes.toLowerCase() === "y") {
