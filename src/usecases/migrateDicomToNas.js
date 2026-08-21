@@ -23,8 +23,28 @@ const consoleUtils = require("../utils/consoleUtils");
 const TEST_MOUNT_POINT = "/mnt/test-nfs";
 const RSYNC_MOUNT_POINT = "/mnt/nfs/pacs";
 
+// Deliberately NOT read from config.local.env's DRY_RUN — run.sh sources that
+// file with `set -a` on every launch, which silently overwrites any
+// `DRY_RUN=true` passed on the command line, making it easy to think a run
+// was a dry-run when it was not. This usecase asks explicitly instead, every
+// time, decoupled from that global config value. Defaults to dry-run (safe)
+// on an empty Enter.
+let dryRunOverride = true;
+
 function isDryRun() {
-  return String(process.env.DRY_RUN || "").toLowerCase() === "true";
+  return dryRunOverride;
+}
+
+async function askDryRunMode(askHelper) {
+  const answer = (
+    await askHelper.ask(
+      "Jalankan sebagai DRY RUN (command hanya dicetak, TIDAK dieksekusi)? (Y/n, default Y): ",
+    )
+  )
+    .trim()
+    .toLowerCase();
+  dryRunOverride = answer !== "n";
+  return dryRunOverride;
 }
 
 async function runBuffered(localAdapter, cmd) {
@@ -44,7 +64,7 @@ function runStreaming(cmd) {
 }
 
 async function promptWithDefault(askHelper, question, defaultValue) {
-  const suffix = defaultValue ? ` [${defaultValue}]` : "";
+  const suffix = defaultValue ? ` (Enter = default: ${defaultValue})` : "";
   const answer = (await askHelper.ask(`${question}${suffix}: `)).trim();
   return answer || defaultValue || "";
 }
@@ -418,6 +438,11 @@ function writeArcManifest(localAdapter, env, params) {
 async function deploySwitch(localAdapter, params, nfsYamlPath, arcYamlPath, askHelper) {
   consoleUtils.section("Step 4/6: Switch storage dcm4chee-arc ke NFS");
   consoleUtils.warn(
+    isDryRun()
+      ? "DRY_RUN aktif — langkah berikut HANYA akan dicetak, tidak dieksekusi ke cluster."
+      : "DRY_RUN TIDAK aktif — langkah berikut akan BENAR-BENAR dieksekusi ke cluster.",
+  );
+  consoleUtils.warn(
     `Proses ini akan men-downtime-kan PACS sebentar: scale down ${params.deployment}, hapus PVC/PV lama ` +
       `(${params.oldPvcName}/${params.oldPvName}), apply storage NFS baru, lalu scale up kembali.`,
   );
@@ -516,8 +541,11 @@ async function migrateDicomToNas(localAdapter, env, askHelper) {
     );
   }
 
+  await askDryRunMode(askHelper);
   if (isDryRun()) {
-    consoleUtils.warn("DRY_RUN aktif — semua command hanya akan ditampilkan, tidak dieksekusi.");
+    consoleUtils.warn("DRY_RUN aktif — semua command hanya akan ditampilkan, tidak dieksekusi ke cluster/NAS.");
+  } else {
+    consoleUtils.warn("DRY_RUN NONAKTIF — command di bawah akan BENAR-BENAR dieksekusi ke cluster/NAS.");
   }
 
   const params = await collectParams(env, askHelper);
