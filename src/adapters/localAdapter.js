@@ -516,7 +516,14 @@ class LocalAdapter {
       if (!line.trim()) continue;
 
       const leadingSpaces = line.match(/^(\s*)/)[1].length;
-      if (leadingSpaces <= indentLength) return i;
+      if (leadingSpaces < indentLength) return i;
+      if (leadingSpaces === indentLength) {
+        // A "compact style" sequence (e.g. "ports:\n- containerPort: 80")
+        // aligns its "- " items with the key itself rather than indenting
+        // them deeper — that's still part of this block, not a sibling key,
+        // so only a same-indent line that ISN'T a sequence item ends it.
+        if (!/^-(\s|$)/.test(line.trimStart())) return i;
+      }
     }
     return lines.length;
   }
@@ -620,6 +627,173 @@ class LocalAdapter {
         consoleUtils.success(`Updated readinessProbe in ${remoteFilename}`);
       }
 
+      await execCommand(`kubectl apply -f ${fullPath}`);
+      consoleUtils.success(`Deployed: ${remoteFilename}`);
+    } catch (err) {
+      consoleUtils.error(`LocalAdapter error: ${err}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Ensures the main RIS container has a NODE_OPTIONS env var capping the V8
+   * heap, plus a `resources:` block (requests/limits memory+cpu) sized so
+   * Kubernetes caps/restarts a runaway `next-server` process in isolation
+   * instead of it exhausting the whole node — see
+   * visionx-vault/02-Troubleshooting/Elvasoft RIS RAM Exhaustion - pacs
+   * Cluster Unresponsive.md for the incident this addresses. Both are set
+   * together deliberately: the container limit alone lets V8 get killed
+   * abruptly mid-operation, while the V8 flag alone doesn't stop the
+   * container from ballooning the node if no limit is set.
+   */
+  async ensureRisResourceLimits(remoteFilename) {
+    if (!remoteFilename) {
+      consoleUtils.info(
+        "RIS yaml file not configured — skipping (optional).",
+      );
+      return;
+    }
+
+    const fullPath = path.join(this.remoteBasePath, remoteFilename);
+
+    try {
+      if (!fs.existsSync(fullPath)) {
+        consoleUtils.warn(
+          `${remoteFilename} not found at ${fullPath} — nothing to update.`,
+        );
+        return;
+      }
+
+      const requestsMemory = this.config.RIS_RESOURCES_REQUESTS_MEMORY;
+      const requestsCpu = this.config.RIS_RESOURCES_REQUESTS_CPU;
+      const limitsMemory = this.config.RIS_RESOURCES_LIMITS_MEMORY;
+      const limitsCpu = this.config.RIS_RESOURCES_LIMITS_CPU;
+      const maxOldSpaceSize = this.config.RIS_NODE_MAX_OLD_SPACE_SIZE;
+
+      let lines = fs.readFileSync(fullPath, "utf8").split(/\r?\n/);
+      let changed = false;
+
+      const imageLine = this._findFirstImageLine(lines);
+      if (!imageLine) {
+        consoleUtils.warn(
+          `No container image found in ${remoteFilename} — skipping resource limit injection.`,
+        );
+        return;
+      }
+
+      const portsBlockForEnv = this._findRisPortsBlock(lines, imageLine.index);
+      if (!portsBlockForEnv) {
+        consoleUtils.warn(
+          `Could not find a "ports:" block in ${remoteFilename} — skipping resource limit injection.`,
+        );
+        return;
+      }
+
+      const envBlock = this._findKeyLine(
+        lines,
+        "env",
+        imageLine.index,
+        portsBlockForEnv.index,
+      );
+
+      if (envBlock) {
+        const envEnd = this._findRisBlockEnd(
+          lines,
+          envBlock.index,
+          envBlock.indent.length,
+        );
+        const itemIndent =
+          this._findEnvItemIndent(lines, envBlock.index, envEnd) ||
+          `${envBlock.indent}  `;
+
+        changed =
+          this._ensureEnvVar(
+            lines,
+            envBlock.index,
+            envEnd,
+            itemIndent,
+            "NODE_OPTIONS",
+            `--max-old-space-size=${maxOldSpaceSize}`,
+          ) || changed;
+      } else {
+        consoleUtils.warn(
+          `Could not find the main container's "env:" block in ${remoteFilename} — skipping NODE_OPTIONS injection.`,
+        );
+      }
+
+      // Recompute the ports block fresh: the env-var edit above may have
+      // inserted lines above it, shifting every stored index.
+      const portsBlock = this._findRisPortsBlock(lines, imageLine.index);
+      if (!portsBlock) {
+        consoleUtils.warn(
+          `Could not find a "ports:" block in ${remoteFilename} — skipping resources block injection.`,
+        );
+        if (changed) {
+          fs.writeFileSync(fullPath, lines.join("\n"), "utf8");
+          consoleUtils.success(`Updated NODE_OPTIONS in ${remoteFilename}`);
+          await execCommand(`kubectl apply -f ${fullPath}`);
+          consoleUtils.success(`Deployed: ${remoteFilename}`);
+        }
+        return;
+      }
+
+      const indent = portsBlock.indent;
+      const portsBlockEnd = this._findRisBlockEnd(
+        lines,
+        portsBlock.index,
+        indent.length,
+      );
+
+      const desiredBlock = [
+        `${indent}resources:`,
+        `${indent}  requests:`,
+        `${indent}    cpu: ${requestsCpu}`,
+        `${indent}    memory: ${requestsMemory}`,
+        `${indent}  limits:`,
+        `${indent}    cpu: ${limitsCpu}`,
+        `${indent}    memory: ${limitsMemory}`,
+      ];
+
+      const existingResourcesRegex = new RegExp(`^${indent}resources\\s*:\\s*$`);
+      const existingIndex = lines.findIndex(
+        (line, idx) => idx >= portsBlockEnd && existingResourcesRegex.test(line),
+      );
+
+      if (existingIndex !== -1) {
+        const existingEnd = this._findRisBlockEnd(
+          lines,
+          existingIndex,
+          indent.length,
+        );
+        const currentBlock = lines.slice(existingIndex, existingEnd).join("\n");
+
+        if (currentBlock === desiredBlock.join("\n")) {
+          consoleUtils.info(
+            `resources already set correctly in ${remoteFilename}.`,
+          );
+        } else {
+          lines.splice(existingIndex, existingEnd - existingIndex, ...desiredBlock);
+          changed = true;
+        }
+      } else {
+        lines.splice(portsBlockEnd, 0, ...desiredBlock);
+        changed = true;
+      }
+
+      if (changed) {
+        fs.writeFileSync(fullPath, lines.join("\n"), "utf8");
+        consoleUtils.success(
+          `Updated resources/NODE_OPTIONS in ${remoteFilename}`,
+        );
+      } else {
+        consoleUtils.info(
+          `resources/NODE_OPTIONS already set correctly in ${remoteFilename}.`,
+        );
+      }
+
+      consoleUtils.warn(
+        `Applying resource limits to ${remoteFilename} — this may restart the pod if its current memory usage exceeds the new limit (${limitsMemory}).`,
+      );
       await execCommand(`kubectl apply -f ${fullPath}`);
       consoleUtils.success(`Deployed: ${remoteFilename}`);
     } catch (err) {

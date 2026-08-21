@@ -28,6 +28,17 @@ const env = {
   DCM4CHEE_POSTGRES_HOST:
     process.env.DCM4CHEE_POSTGRES_HOST || "visionx-supabase-db.supabase",
 
+  // RIS resource limits (memory/cpu + NODE_OPTIONS) — defaults from the
+  // Elvasoft RIS RAM Exhaustion incident writeup (visionx-vault).
+  RIS_RESOURCES_REQUESTS_MEMORY:
+    process.env.RIS_RESOURCES_REQUESTS_MEMORY || "512Mi",
+  RIS_RESOURCES_REQUESTS_CPU: process.env.RIS_RESOURCES_REQUESTS_CPU || "250m",
+  RIS_RESOURCES_LIMITS_MEMORY:
+    process.env.RIS_RESOURCES_LIMITS_MEMORY || "1Gi",
+  RIS_RESOURCES_LIMITS_CPU: process.env.RIS_RESOURCES_LIMITS_CPU || "1000m",
+  RIS_NODE_MAX_OLD_SPACE_SIZE:
+    process.env.RIS_NODE_MAX_OLD_SPACE_SIZE || "800",
+
   // Supabase / PostgreSQL
   SUPABASE_HOST: process.env.SUPABASE_HOST,
   SUPABASE_PORT: parseInt(process.env.SUPABASE_PORT, 10) || 5432,
