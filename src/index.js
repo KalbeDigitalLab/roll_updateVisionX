@@ -9,6 +9,7 @@ const updateDatabase = require("./usecases/updateDatabase");
 const updateMirthChannel = require("./usecases/updateMirthChannel");
 const deployHelper = require("./usecases/deployHelper");
 const deployDicomSend = require("./usecases/deployDicomSend");
+const migrateDicomToNas = require("./usecases/migrateDicomToNas");
 const increaseSupabaseLimit = require("./usecases/increaseSupabaseLimit");
 const hardenSupabaseChart = require("./usecases/hardenSupabaseChart");
 const triggerAnalyticsMaintenance = require("./usecases/triggerAnalyticsMaintenance");
@@ -103,8 +104,10 @@ async function runUpdateFlow(ask) {
             { name: "Update Image", value: "image" },
             { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
             { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
+            { name: "RIS Resource Limits (memory/cpu + NODE_OPTIONS, ris.yaml & ris-v1.yaml)", value: "risResourceLimits" },
             { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
             { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
+            { name: "Migrate DICOM Storage to NAS (NFS)", value: "migrateDicomNas" },
             { name: "Deploy Kubernetes Helper", value: "helper" },
             { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
             { name: "Update Database", value: "db" },
@@ -174,8 +177,10 @@ async function runUpdateFlow(ask) {
   const runSsh = selectedTasks.includes("image") ? "y" : "n";
   const runRisDicomProxyEnv = selectedTasks.includes("risDicomProxyEnv") ? "y" : "n";
   const runRisReadinessProbe = selectedTasks.includes("risReadinessProbe") ? "y" : "n";
+  const runRisResourceLimits = selectedTasks.includes("risResourceLimits") ? "y" : "n";
   const runDcm4cheeProbes = selectedTasks.includes("dcm4cheeProbes") ? "y" : "n";
   const runDcm4cheePostgresEnv = selectedTasks.includes("dcm4cheePostgresEnv") ? "y" : "n";
+  const runMigrateDicomNas = selectedTasks.includes("migrateDicomNas") ? "y" : "n";
   const runHelper = selectedTasks.includes("helper") ? "y" : "n";
   const runDicomSend = selectedTasks.includes("dicomSend") ? "y" : "n";
   const runDb = selectedTasks.includes("db") ? "y" : "n";
@@ -232,6 +237,17 @@ async function runUpdateFlow(ask) {
     consoleUtils.skipped("Skipping RIS ReadinessProbe Update process.");
   }
 
+  if (runRisResourceLimits.toLowerCase() === "y") {
+    consoleUtils.section("RIS Resource Limits Update");
+    const local = new LocalAdapter(env);
+    await local.ensureRisResourceLimits(env.RIS_YAML_FILE);
+    await local.ensureRisResourceLimits(env.RIS_V1_YAML_FILE);
+    local.syncRisTemplateFromYaml(env.RIS_YAML_FILE, env.RIS_YAML_TEMPLATE_FILE);
+    consoleUtils.success("RIS Resource Limits Update Completed.");
+  } else {
+    consoleUtils.skipped("Skipping RIS Resource Limits Update process.");
+  }
+
   if (runDcm4cheeProbes.toLowerCase() === "y") {
     consoleUtils.section("Dcm4chee Probes Update");
     const local = new LocalAdapter(env);
@@ -248,6 +264,15 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("Dcm4chee Postgres Env Update Completed.");
   } else {
     consoleUtils.skipped("Skipping Dcm4chee Postgres Env Update process.");
+  }
+
+  if (runMigrateDicomNas.toLowerCase() === "y") {
+    consoleUtils.section("Migrate DICOM Storage to NAS (NFS)");
+    const local = new LocalAdapter(env);
+    await migrateDicomToNas(local, env, ask);
+    consoleUtils.success("Migrate DICOM Storage to NAS Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Migrate DICOM Storage to NAS process.");
   }
 
   if (runHelper.toLowerCase() === "y") {
