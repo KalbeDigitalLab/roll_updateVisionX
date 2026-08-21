@@ -52,7 +52,11 @@ async function promptWithDefault(askHelper, question, defaultValue) {
 async function collectParams(env, askHelper) {
   consoleUtils.section("Konfigurasi Migrasi NAS");
 
-  const nasIp = await promptWithDefault(askHelper, "NAS_IP (Synology, wajib diisi)", "");
+  const nasIp = await promptWithDefault(
+    askHelper,
+    "NAS_IP (Synology, wajib diisi, contoh: 10.10.10.12)",
+    "",
+  );
   if (!nasIp) {
     throw new Error("NAS_IP wajib diisi — migrasi dibatalkan.");
   }
