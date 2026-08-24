@@ -287,7 +287,7 @@ fetch_current() {
 log "DRY RUN: previewing changes for $(($(wc -l < "$INPUT_CSV") - 1)) row(s), no writes yet"
 
 dry_processed=0; dry_skipped=0; dry_row_num=0
-while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm new_acc new_desc source_dt; do
+while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm new_acc new_desc new_ref new_clin source_dt; do
   dry_row_num=$((dry_row_num + 1))
   accession_no=$(strip_quotes "$accession_no")
   study_iuid=$(strip_quotes "$study_iuid")
@@ -295,6 +295,8 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
   new_tm=$(strip_quotes "$new_tm")
   new_acc=$(strip_quotes "$new_acc")
   new_desc=$(strip_quotes "$new_desc")
+  new_ref=$(strip_quotes "$new_ref")
+  new_clin=$(strip_quotes "$new_clin")
 
   if [[ -z "$new_da" || -z "$new_tm" ]]; then
     log "SKIP $accession_no ($study_iuid): no source exam date/time in CSV row - needs manual investigation."
@@ -312,10 +314,12 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
 
   target_acc="${cur_acc:-$new_acc}"
   target_desc="${cur_desc:-$new_desc}"
+  target_ref="${cur_ref:-$new_ref}"
+  target_clin="${cur_clin:-$new_clin}"
 
   log "---- ${target_acc:-${accession_no:-*}} ($study_iuid) ----"
   log "  Current:  StudyDate=${cur_da:-(empty)} StudyTime=${cur_tm:-(empty)} Accession=${cur_acc:-(empty)} Desc=${cur_desc:-(empty)} RefPhysician=${cur_ref:-(empty)} Clinical=${cur_clin:-(empty)}"
-  log "  Proposed: StudyDate=$new_da StudyTime=$new_tm Accession=${target_acc:-(empty)} Desc=${target_desc:-(empty)}  (other fields preserved as-is)"
+  log "  Proposed: StudyDate=$new_da StudyTime=$new_tm Accession=${target_acc:-(empty)} Desc=${target_desc:-(empty)} RefPhysician=${target_ref:-(empty)} Clinical=${target_clin:-(empty)}"
   dry_processed=$((dry_processed + 1))
   batch_pause "$dry_row_num"
 done < <(tail -n +2 "$INPUT_CSV")
@@ -354,7 +358,7 @@ fi
 # ---------------------------------------------------------------------------
 applied=0; skipped=0; mismatches=0; total=0
 
-while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm new_acc new_desc source_dt; do
+while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm new_acc new_desc new_ref new_clin source_dt; do
   total=$((total + 1))
   accession_no=$(strip_quotes "$accession_no")
   study_iuid=$(strip_quotes "$study_iuid")
@@ -362,6 +366,8 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
   new_tm=$(strip_quotes "$new_tm")
   new_acc=$(strip_quotes "$new_acc")
   new_desc=$(strip_quotes "$new_desc")
+  new_ref=$(strip_quotes "$new_ref")
+  new_clin=$(strip_quotes "$new_clin")
 
   if [[ -z "$new_da" || -z "$new_tm" ]]; then
     skipped=$((skipped + 1))
@@ -378,13 +384,17 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
 
   target_acc="${cur_acc:-$new_acc}"
   target_desc="${cur_desc:-$new_desc}"
+  target_ref="${cur_ref:-$new_ref}"
+  target_clin="${cur_clin:-$new_clin}"
 
   payload=$(echo "$current_json" | jq -c \
     --arg uid "$study_iuid" \
     --arg da "$new_da" \
     --arg tm "$new_tm" \
     --arg acc "$target_acc" \
-    --arg desc "$target_desc" '
+    --arg desc "$target_desc" \
+    --arg ref "$target_ref" \
+    --arg clin "$target_clin" '
     {
       "0020000D": {"vr":"UI","Value":[$uid]},
       "00080020": {"vr":"DA","Value":[$da]},
@@ -392,8 +402,8 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
       "00100020": .[0]["00100020"],
       "00080050": (if $acc != "" then {"vr":"SH","Value":[$acc]} else .[0]["00080050"] end),
       "00081030": (if $desc != "" then {"vr":"LO","Value":[$desc]} else .[0]["00081030"] end),
-      "00080090": .[0]["00080090"],
-      "001021B0": .[0]["001021B0"]
+      "00080090": (if $ref != "" then {"vr":"PN","Value":[$ref]} else .[0]["00080090"] end),
+      "001021B0": (if $clin != "" then {"vr":"LT","Value":[$clin]} else .[0]["001021B0"] end)
     } | with_entries(select(.value != null))')
 
   if ! http_put_retry "$BASE_URL/studies/$study_iuid" "$payload"; then
