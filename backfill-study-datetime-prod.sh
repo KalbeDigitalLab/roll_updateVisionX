@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# End-to-end repair for studies affected by the synchronizeStudy() StudyDate/StudyTime
-# bug (commit 82dc38a0): FETCH the affected list from production Postgres, DRY RUN the
-# proposed dcm4chee changes, then APPLY only after an explicit interactive confirmation
-# (or --yes to skip the prompt for unattended runs).
+# End-to-end repair for studies with missing or wiped StudyDate/StudyTime:
+# Performs a FULL SCAN of the database, fetches the list from production Postgres,
+# DRY RUN the proposed dcm4chee changes, then APPLY only after an explicit
+# interactive confirmation (or --yes to skip the prompt for unattended runs).
 #
 # STAGES (always run in this order, every run):
-#   1. FETCH   - runs identify-affected-studies.sql (read-only) against the production
-#                Postgres backing dcm4chee/RIS/FHIR, via `kubectl exec psql`. Writes
-#                affected-studies-<timestamp>.csv. Never modifies the database.
+#   1. FETCH   - runs identify-affected-studies.sql (read-only full scan) against the
+#                production Postgres backing dcm4chee/RIS/FHIR, via `kubectl exec psql`.
+#                Writes affected-studies-<timestamp>.csv. Never modifies the database.
 #   2. DRY RUN - for every row, fetches the study's current full attribute set from
 #                dcm4chee and prints current vs. proposed StudyDate/StudyTime. No writes.
 #   3. CONFIRM - prints a summary and asks "type APPLY to proceed" (skipped with --yes).
@@ -27,14 +27,10 @@
 #
 # USAGE
 #   Runs directly, no arguments required - defaults to --base-url
-#   http://10.0.0.11/dcm4chee-arc/aets/DCM4CHEE/rs and --bug-introduced-at
-#   "2026-07-28 04:58:37+00" (the last confirmed values for this deployment):
+#   http://10.0.0.11/dcm4chee-arc/aets/DCM4CHEE/rs:
 #     ./backfill-study-datetime-prod.sh
 #
-#   Override either default explicitly, e.g. investigating a different window:
-#     ./backfill-study-datetime-prod.sh --bug-introduced-at "2026-06-01 00:00:00+00"
-#
-#   Non-interactive (e.g. re-running a previously-reviewed window unattended):
+#   Non-interactive (unattended runs):
 #     ./backfill-study-datetime-prod.sh --yes
 #
 #   Skip the fetch stage and reuse a CSV you already have:
@@ -50,13 +46,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQL_FILE="$SCRIPT_DIR/identify-affected-studies.sql"
 
 DEFAULT_BASE_URL="http://10.0.0.11/dcm4chee-arc/aets/DCM4CHEE/rs"
-DEFAULT_BUG_INTRODUCED_AT="2026-07-01 04:58:37+00"
 
 BASE_URL="$DEFAULT_BASE_URL"
 TOKEN=""
 INPUT_CSV=""
-BUG_INTRODUCED_AT="$DEFAULT_BUG_INTRODUCED_AT"
-BUG_FIXED_AT="now()"
 YES=0
 CONTINUE_ON_MISMATCH=0
 
@@ -81,16 +74,8 @@ Usage: backfill-study-datetime-prod.sh [options]
 
 Runs with no arguments using these defaults, so it can be launched directly:
   --base-url             $DEFAULT_BASE_URL
-  --bug-introduced-at    $DEFAULT_BUG_INTRODUCED_AT
-
-IMPORTANT: --bug-introduced-at defaults to the last confirmed value for THIS
-deployment. If the bug window changes (e.g. investigating a different/wider
-incident), pass --bug-introduced-at explicitly rather than trusting the default.
 
 Fetch stage (skip with --input-csv):
-  --bug-introduced-at TS     UTC timestamp the buggy synchronizeStudy() first shipped to
-                              THIS production deployment.
-  --bug-fixed-at TS          UTC timestamp the fix was deployed (default: now()).
   --db-namespace NS          k8s namespace of the Postgres pod (default: supabase)
   --db-deploy NAME           k8s deploy/pod ref for Postgres, e.g. deploy/visionx-supabase-db
   --cred-namespace NS        k8s namespace of a pod whose env has the DB password (default: dcm4chee)
@@ -125,8 +110,6 @@ while [[ $# -gt 0 ]]; do
     --base-url) BASE_URL="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
     --input-csv) INPUT_CSV="$2"; shift 2 ;;
-    --bug-introduced-at) BUG_INTRODUCED_AT="$2"; shift 2 ;;
-    --bug-fixed-at) BUG_FIXED_AT="$2"; shift 2 ;;
     --db-namespace) DB_NAMESPACE="$2"; shift 2 ;;
     --db-deploy) DB_DEPLOY="$2"; shift 2 ;;
     --cred-namespace) CRED_NAMESPACE="$2"; shift 2 ;;
@@ -152,9 +135,6 @@ LOG_FILE="$SCRIPT_DIR/backfill-study-datetime-prod-$TS.log"
 log() { printf '%s  %s\n' "$(date -Is)" "$*" | tee -a "$LOG_FILE"; }
 
 log "base-url: $BASE_URL$([[ "$BASE_URL" == "$DEFAULT_BASE_URL" ]] && echo ' (default)')"
-if [[ -z "$INPUT_CSV" ]]; then
-  log "bug-introduced-at: $BUG_INTRODUCED_AT$([[ "$BUG_INTRODUCED_AT" == "$DEFAULT_BUG_INTRODUCED_AT" ]] && echo ' (default - pass --bug-introduced-at explicitly if investigating a different window)')"
-fi
 
 AUTH_HEADER=()
 if [[ -n "$TOKEN" ]]; then
@@ -174,7 +154,7 @@ else
   command -v kubectl >/dev/null || { echo "kubectl is required to fetch (or pass --input-csv)" >&2; exit 1; }
   [[ -f "$SQL_FILE" ]] || { echo "SQL file not found: $SQL_FILE" >&2; exit 1; }
 
-  log "FETCH: bug_introduced_at=$BUG_INTRODUCED_AT bug_fixed_at=$BUG_FIXED_AT"
+  log "FETCH: running full database scan for studies with missing StudyDate/StudyTime"
   log "FETCH: reading DB credentials from $CRED_NAMESPACE/$CRED_DEPLOY env:$CRED_ENV_VAR"
 
   DB_PASSWORD="$(kubectl exec -n "$CRED_NAMESPACE" "$CRED_DEPLOY" -- env 2>/dev/null \
@@ -189,7 +169,6 @@ else
 
   if ! cat "$SQL_FILE" | kubectl exec -i -n "$DB_NAMESPACE" "$DB_DEPLOY" -- env PGPASSWORD="$DB_PASSWORD" \
       psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
-      -v "bug_introduced_at=$BUG_INTRODUCED_AT" -v "bug_fixed_at=$BUG_FIXED_AT" \
       --csv > "$INPUT_CSV"; then
     echo "Fetch query failed - see output above." >&2
     exit 1
@@ -199,7 +178,7 @@ else
   row_count=$(($(wc -l < "$INPUT_CSV") - 1))
   log "FETCH: $row_count affected study row(s) written to $INPUT_CSV"
   if [[ "$row_count" -le 0 ]]; then
-    log "FETCH: no affected studies found for this window - nothing to do."
+    log "FETCH: no studies with missing StudyDate/StudyTime found - nothing to do."
     exit 0
   fi
 fi
