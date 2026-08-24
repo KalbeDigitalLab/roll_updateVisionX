@@ -51,6 +51,7 @@ BASE_URL="$DEFAULT_BASE_URL"
 TOKEN=""
 INPUT_CSV=""
 YES=0
+DRY_RUN=0
 CONTINUE_ON_MISMATCH=0
 
 BATCH_SIZE=25
@@ -85,6 +86,7 @@ Fetch stage (skip with --input-csv):
 Common:
   --base-url URL             dcm4chee REST base URL (default: $DEFAULT_BASE_URL)
   --token TOKEN               Bearer token, only if dcm4chee requires auth.
+  --dry-run                   Only perform fetch & dry run preview; exit before applying.
   --yes                       Skip the interactive confirmation before applying writes.
   --continue-on-mismatch      Keep processing remaining rows after a verification mismatch.
 
@@ -114,6 +116,7 @@ while [[ $# -gt 0 ]]; do
     --db-deploy) DB_DEPLOY="$2"; shift 2 ;;
     --cred-namespace) CRED_NAMESPACE="$2"; shift 2 ;;
     --cred-deploy) CRED_DEPLOY="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
     --yes) YES=1; shift ;;
     --continue-on-mismatch) CONTINUE_ON_MISMATCH=1; shift ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
@@ -272,24 +275,26 @@ fetch_current() {
   [[ "$(echo "$current_json" | jq 'length')" -gt 0 ]] || return 1
   patient_id=$(echo "$current_json" | jq -r '.[0]["00100020"].Value[0] // empty')
   [[ -n "$patient_id" ]] || return 1
-  cur_da=$(echo "$current_json"   | jq -r '.[0]["00080020"].Value[0] // "(empty)"')
-  cur_tm=$(echo "$current_json"   | jq -r '.[0]["00080030"].Value[0] // "(empty)"')
-  cur_acc=$(echo "$current_json"  | jq -r '.[0]["00080050"].Value[0] // "(empty)"')
-  cur_desc=$(echo "$current_json" | jq -r '.[0]["00081030"].Value[0] // "(empty)"')
-  cur_ref=$(echo "$current_json"  | jq -r '.[0]["00080090"].Value[0].Alphabetic // "(empty)"')
-  cur_clin=$(echo "$current_json" | jq -r '.[0]["001021B0"].Value[0] // "(empty)"')
+  cur_da=$(echo "$current_json"   | jq -r '.[0]["00080020"].Value[0] // empty')
+  cur_tm=$(echo "$current_json"   | jq -r '.[0]["00080030"].Value[0] // empty')
+  cur_acc=$(echo "$current_json"  | jq -r '.[0]["00080050"].Value[0] // empty')
+  cur_desc=$(echo "$current_json" | jq -r '.[0]["00081030"].Value[0] // empty')
+  cur_ref=$(echo "$current_json"  | jq -r '.[0]["00080090"].Value[0].Alphabetic // empty')
+  cur_clin=$(echo "$current_json" | jq -r '.[0]["001021B0"].Value[0] // empty')
   return 0
 }
 
 log "DRY RUN: previewing changes for $(($(wc -l < "$INPUT_CSV") - 1)) row(s), no writes yet"
 
 dry_processed=0; dry_skipped=0; dry_row_num=0
-while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm source_dt; do
+while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm new_acc new_desc source_dt; do
   dry_row_num=$((dry_row_num + 1))
   accession_no=$(strip_quotes "$accession_no")
   study_iuid=$(strip_quotes "$study_iuid")
   new_da=$(strip_quotes "$new_da")
   new_tm=$(strip_quotes "$new_tm")
+  new_acc=$(strip_quotes "$new_acc")
+  new_desc=$(strip_quotes "$new_desc")
 
   if [[ -z "$new_da" || -z "$new_tm" ]]; then
     log "SKIP $accession_no ($study_iuid): no source exam date/time in CSV row - needs manual investigation."
@@ -305,9 +310,12 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
     continue
   fi
 
-  log "---- $accession_no ($study_iuid) ----"
-  log "  Current:  StudyDate=$cur_da StudyTime=$cur_tm Accession=$cur_acc Desc=$cur_desc RefPhysician=$cur_ref Clinical=$cur_clin"
-  log "  Proposed: StudyDate=$new_da StudyTime=$new_tm  (all other fields preserved as-is)"
+  target_acc="${cur_acc:-$new_acc}"
+  target_desc="${cur_desc:-$new_desc}"
+
+  log "---- ${target_acc:-${accession_no:-*}} ($study_iuid) ----"
+  log "  Current:  StudyDate=${cur_da:-(empty)} StudyTime=${cur_tm:-(empty)} Accession=${cur_acc:-(empty)} Desc=${cur_desc:-(empty)} RefPhysician=${cur_ref:-(empty)} Clinical=${cur_clin:-(empty)}"
+  log "  Proposed: StudyDate=$new_da StudyTime=$new_tm Accession=${target_acc:-(empty)} Desc=${target_desc:-(empty)}  (other fields preserved as-is)"
   dry_processed=$((dry_processed + 1))
   batch_pause "$dry_row_num"
 done < <(tail -n +2 "$INPUT_CSV")
@@ -316,6 +324,11 @@ log "DRY RUN summary: previewed=$dry_processed skipped=$dry_skipped"
 
 if [[ "$dry_processed" -le 0 ]]; then
   log "Nothing eligible to apply. Stopping."
+  exit 0
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  log "DRY RUN: --dry-run supplied. Changes previewed without applying. CSV saved at: $INPUT_CSV"
   exit 0
 fi
 
@@ -341,12 +354,14 @@ fi
 # ---------------------------------------------------------------------------
 applied=0; skipped=0; mismatches=0; total=0
 
-while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm source_dt; do
+while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_tm new_acc new_desc source_dt; do
   total=$((total + 1))
   accession_no=$(strip_quotes "$accession_no")
   study_iuid=$(strip_quotes "$study_iuid")
   new_da=$(strip_quotes "$new_da")
   new_tm=$(strip_quotes "$new_tm")
+  new_acc=$(strip_quotes "$new_acc")
+  new_desc=$(strip_quotes "$new_desc")
 
   if [[ -z "$new_da" || -z "$new_tm" ]]; then
     skipped=$((skipped + 1))
@@ -361,25 +376,33 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
     continue
   fi
 
-  payload=$(echo "$current_json" | jq -c --arg uid "$study_iuid" --arg da "$new_da" --arg tm "$new_tm" '
+  target_acc="${cur_acc:-$new_acc}"
+  target_desc="${cur_desc:-$new_desc}"
+
+  payload=$(echo "$current_json" | jq -c \
+    --arg uid "$study_iuid" \
+    --arg da "$new_da" \
+    --arg tm "$new_tm" \
+    --arg acc "$target_acc" \
+    --arg desc "$target_desc" '
     {
       "0020000D": {"vr":"UI","Value":[$uid]},
       "00080020": {"vr":"DA","Value":[$da]},
       "00080030": {"vr":"TM","Value":[$tm]},
       "00100020": .[0]["00100020"],
-      "00080050": .[0]["00080050"],
-      "00081030": .[0]["00081030"],
+      "00080050": (if $acc != "" then {"vr":"SH","Value":[$acc]} else .[0]["00080050"] end),
+      "00081030": (if $desc != "" then {"vr":"LO","Value":[$desc]} else .[0]["00081030"] end),
       "00080090": .[0]["00080090"],
       "001021B0": .[0]["001021B0"]
-    }')
+    } | with_entries(select(.value != null))')
 
   if ! http_put_retry "$BASE_URL/studies/$study_iuid" "$payload"; then
-    log "WRITE FAILED $accession_no ($study_iuid) HTTP $http_code: $resp_body"
+    log "WRITE FAILED ${target_acc:-*} ($study_iuid) HTTP $http_code: $resp_body"
     if [[ $CONTINUE_ON_MISMATCH -ne 1 ]]; then
       log "Stopping (pass --continue-on-mismatch to keep going)."
       break
     fi
-    step_confirm "Row $total: $accession_no ($study_iuid) - WRITE FAILED"
+    step_confirm "Row $total: ${target_acc:-*} ($study_iuid) - WRITE FAILED"
     batch_pause "$total"
     [[ $STEP_QUIT -eq 1 ]] && break
     continue
@@ -392,23 +415,23 @@ while IFS=',' read -r accession_no study_iuid current_da current_tm new_da new_t
   after_desc=$(echo "$after_json" | jq -r '.[0]["00081030"].Value[0] // empty')
 
   ok=1
-  [[ "$after_da" == "$new_da" ]]   || ok=0
-  [[ "$after_tm" == "$new_tm" ]]   || ok=0
-  [[ "$after_acc" == "$cur_acc" ]] || ok=0
-  [[ "$after_desc" == "$cur_desc" ]] || ok=0
+  [[ "$after_da" == "$new_da" ]]       || ok=0
+  [[ "$after_tm" == "$new_tm" ]]       || ok=0
+  [[ "$after_acc" == "$target_acc" ]]   || ok=0
+  [[ "$after_desc" == "$target_desc" ]] || ok=0
 
   if [[ $ok -eq 1 ]]; then
-    log "OK $accession_no ($study_iuid): StudyDate/StudyTime backfilled and verified."
+    log "OK ${target_acc:-*} ($study_iuid): Study metadata backfilled and verified."
     applied=$((applied + 1))
-    step_confirm "Row $total: $accession_no ($study_iuid) - OK"
+    step_confirm "Row $total: ${target_acc:-*} ($study_iuid) - OK"
   else
-    log "MISMATCH $accession_no ($study_iuid) after write! Accession=$after_acc Desc=$after_desc DA=$after_da TM=$after_tm"
+    log "MISMATCH ${target_acc:-*} ($study_iuid) after write! Accession=$after_acc (expected $target_acc) Desc=$after_desc (expected $target_desc) DA=$after_da TM=$after_tm"
     mismatches=$((mismatches + 1))
     if [[ $CONTINUE_ON_MISMATCH -ne 1 ]]; then
       log "Stopping due to mismatch (pass --continue-on-mismatch to keep going after review)."
       break
     fi
-    step_confirm "Row $total: $accession_no ($study_iuid) - MISMATCH"
+    step_confirm "Row $total: ${target_acc:-*} ($study_iuid) - MISMATCH"
   fi
   batch_pause "$total"
   [[ $STEP_QUIT -eq 1 ]] && break
