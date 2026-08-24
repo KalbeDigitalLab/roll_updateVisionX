@@ -50,7 +50,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQL_FILE="$SCRIPT_DIR/identify-affected-studies.sql"
 
 DEFAULT_BASE_URL="http://10.0.0.11/dcm4chee-arc/aets/DCM4CHEE/rs"
-DEFAULT_BUG_INTRODUCED_AT="2026-07-28 04:58:37+00"
+DEFAULT_BUG_INTRODUCED_AT="2026-07-01 04:58:37+00"
 
 BASE_URL="$DEFAULT_BASE_URL"
 TOKEN=""
