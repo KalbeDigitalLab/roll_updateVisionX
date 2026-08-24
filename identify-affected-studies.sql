@@ -37,23 +37,15 @@ WITH fhir_imaging AS (
   ORDER BY uid.elem->>'value', imgs.started DESC
 ),
 audit_sync AS (
-  SELECT DISTINCT ON (c->>'newValue')
-    c->>'newValue' AS study_iuid,
+  SELECT DISTINCT ON (new_value)
+    new_value   AS study_iuid,
     resource_id AS accession_no
-  FROM audit_log,
-       LATERAL jsonb_array_elements(
-         CASE
-           WHEN jsonb_typeof(changes) = 'object' THEN jsonb_build_array(changes)
-           WHEN jsonb_typeof(changes) = 'array'  THEN changes
-           ELSE '[]'::jsonb
-         END
-       ) c
-  WHERE action = 'Synchronize Study'
+  FROM audit_trail
+  WHERE field_name = 'studyImageId'
     AND resource_type = 'Study'
-    AND c->>'field' = 'studyImageId'
-    AND c->>'newValue' IS NOT NULL
-    AND c->>'newValue' != ''
-  ORDER BY c->>'newValue', created_at DESC
+    AND new_value IS NOT NULL
+    AND new_value != ''
+  ORDER BY new_value, created_at DESC
 ),
 fhir_sr_by_acc AS (
   SELECT DISTINCT ON (acc.elem->>'value')
