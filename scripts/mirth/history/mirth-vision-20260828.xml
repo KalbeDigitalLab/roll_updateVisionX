@@ -2,8 +2,8 @@
   <id>c074f1b3-6c09-49b7-b4b6-9c0ee22dc133</id>
   <nextMetaDataId>20</nextMetaDataId>
   <name>mirth-vision</name>
-  <description>mirth-vision-2026-08-28</description>
-  <revision>6</revision>
+  <description>mirth-vision-2026-07-21</description>
+  <revision>5</revision>
   <sourceConnector version="4.5.2">
     <metaDataId>0</metaDataId>
     <name>sourceConnector</name>
@@ -2374,68 +2374,6 @@ function fetchById(fhirId) {
     }
 }
 
-function normalizeModality(code) {
-    if (!code) return &quot;&quot;;
-    var c = String(code).toUpperCase().trim();
-    return (c === &quot;CR&quot; || c === &quot;DX&quot;) ? &quot;DX&quot; : c;
-}
-
-function extractMrn(resource) {
-    if (!resource || !resource.subject || !resource.subject.reference) return &quot;&quot;;
-    var ref = String(resource.subject.reference);
-    return ref.substring(ref.lastIndexOf(&quot;/&quot;) + 1);
-}
-
-function extractModalityCode(resource) {
-    if (!resource || !resource.modality) return &quot;&quot;;
-    var m = resource.modality;
-    if (Array.isArray(m)) {
-        return (m[0] &amp;&amp; m[0].code) ? m[0].code : &quot;&quot;;
-    }
-    return m.code || &quot;&quot;;
-}
-
-function fetchIncomingModality(studyUID) {
-    var httpClient = null;
-    var httpResponse = null;
-    try {
-        var urlStr = &quot;VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/DCM4CHEE/rs/studies?StudyInstanceUID=&quot; + encodeURIComponent(studyUID);
-        logger.info(&quot;[ConflictCheck] fetchIncomingModality URL=&quot; + urlStr);
-
-        var RequestConfig = org.apache.http.client.config.RequestConfig;
-        var HttpClients   = org.apache.http.impl.client.HttpClients;
-        var HttpGet       = org.apache.http.client.methods.HttpGet;
-        var EntityUtils   = org.apache.http.util.EntityUtils;
-
-        var config = RequestConfig.custom()
-            .setConnectTimeout(30000)
-            .setSocketTimeout(30000)
-            .build();
-
-        httpClient = HttpClients.custom().setDefaultRequestConfig(config).build();
-
-        var httpGet = new HttpGet(urlStr);
-        httpGet.setHeader(&quot;Authorization&quot;, &quot;Bearer &quot; + $(&apos;keycloak_token&apos;));
-
-        httpResponse = httpClient.execute(httpGet);
-        var entity = httpResponse.getEntity();
-        var body = entity != null ? String(EntityUtils.toString(entity, &quot;UTF-8&quot;)) : &quot;&quot;;
-        if (!body || body.length === 0) return &quot;&quot;;
-
-        var parsed = safeParse(body);
-        if (parsed &amp;&amp; parsed[0] &amp;&amp; parsed[0][&quot;00080061&quot;] &amp;&amp; parsed[0][&quot;00080061&quot;].Value) {
-            return parsed[0][&quot;00080061&quot;].Value[0];
-        }
-        return &quot;&quot;;
-    } catch (e) {
-        logger.error(&quot;[ConflictCheck] fetchIncomingModality EXCEPTION: &quot; + e);
-        return &quot;&quot;;
-    } finally {
-        try { if (httpResponse != null) httpResponse.close(); } catch (ignore) {}
-        try { if (httpClient != null) httpClient.close(); } catch (ignore) {}
-    }
-}
-
 try {
     var resp = safeParse(respMsg);
     logger.info(&quot;[ConflictCheck] first-call resourceType=&quot; + (resp ? resp.resourceType : &quot;null&quot;)
@@ -2453,25 +2391,42 @@ try {
     channelMap.put(&apos;found_final&apos;, found);
 
     if (found) {
-        var existingRecord = hasStudy(respById) ? respById : resp;
-        var existingMrn = extractMrn(existingRecord);
-        var existingModality = normalizeModality(extractModalityCode(existingRecord));
-        var incomingMrn = String($(&apos;mrn&apos;) || &quot;&quot;);
-        var incomingModality = normalizeModality(fetchIncomingModality(studyID));
+        logger.info(&quot;[ConflictCheck] CONFLICT branch — building ConflictFhirId&quot;);
+        channelMap.put(&apos;no_service&apos;, true);
+        study.status = &quot;unknown&quot;;
+        log_audit.user_id = &quot;PACS&quot;;
+        log_audit.username = &quot;PACS&quot;;
+        trail_audit.user_id = &quot;PACS&quot;;
+        trail_audit.username = &quot;PACS&quot;;
+        log_audit.action = &quot;unscheduled study&quot;;
 
-        var sameEncounter = !!existingMrn &amp;&amp; !!incomingMrn &amp;&amp; (existingMrn === incomingMrn)
-            &amp;&amp; !!existingModality &amp;&amp; !!incomingModality &amp;&amp; (existingModality === incomingModality);
+        var ConflictFhirId = FhirId + &quot;-conflict-&quot; + studyID;
+        channelMap.put(&apos;FhirId&apos;, ConflictFhirId);
 
-        logger.info(&quot;[ConflictCheck] ACCESSION OCCUPIED - existingMrn=&quot; + existingMrn + &quot; incomingMrn=&quot; + incomingMrn
-            + &quot; existingModality=&quot; + existingModality + &quot; incomingModality=&quot; + incomingModality
-            + &quot; sameEncounter=&quot; + sameEncounter);
+        study.id = ConflictFhirId;
+        serviceRequest.id = ConflictFhirId;
+        procedure.id = ConflictFhirId;
 
-        if (sameEncounter) {
-            logger.info(&quot;[ConflictCheck] Same patient+modality on occupied accession - treating as normal resync, not a conflict.&quot;);
-        } else {
-            logger.warn(&quot;[ConflictCheck] Accession &quot; + FhirId + &quot; is occupied by a different patient/modality. Rejecting message.&quot;);
-            channelMap.put(&apos;checkPatientExistError&apos;, true);
-        }
+        var UniqueStudyID = studyID + &quot;-conflict-&quot; + UpdatedAccessionNumber;
+
+        study.identifier = [
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId },
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: studyID }
+        ];
+        serviceRequest.identifier = [
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId }
+        ];
+        procedure.identifier = [
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/accession&quot;, &quot;value&quot;: ConflictFhirId },
+            { &quot;system&quot;: &quot;http://hospital.smarthealth.org/study-id&quot;,  &quot;value&quot;: UniqueStudyID }
+        ];
+
+        channelMap.put(&apos;fhir_study&apos;, JSON.stringify(study));
+        channelMap.put(&apos;fhir_service_request&apos;, JSON.stringify(serviceRequest));
+        channelMap.put(&apos;fhir_procedure&apos;, JSON.stringify(procedure));
+
+        var accessionSupabase = &quot;eq.&quot; + ConflictFhirId;
+        channelMap.put(&apos;accessionSupabase&apos;, accessionSupabase);
     } else {
         var isStudyExist = ($(&apos;no_study&apos;) == false);
         logger.info(&quot;[ConflictCheck] NO-STUDY branch — treating as fresh&quot;);
