@@ -3,7 +3,7 @@
   <nextMetaDataId>20</nextMetaDataId>
   <name>mirth-vision</name>
   <description>mirth-vision-2026-08-28</description>
-  <revision>6</revision>
+  <revision>7</revision>
   <sourceConnector version="4.5.2">
     <metaDataId>0</metaDataId>
     <name>sourceConnector</name>
@@ -2380,6 +2380,14 @@ function normalizeModality(code) {
     return (c === &quot;CR&quot; || c === &quot;DX&quot;) ? &quot;DX&quot; : c;
 }
 
+function unwrapResource(r) {
+    if (!r) return null;
+    if (r.resourceType === &quot;Bundle&quot; &amp;&amp; r.entry &amp;&amp; r.entry.length &gt; 0 &amp;&amp; r.entry[0].resource) {
+        return r.entry[0].resource;
+    }
+    return r;
+}
+
 function extractMrn(resource) {
     if (!resource || !resource.subject || !resource.subject.reference) return &quot;&quot;;
     var ref = String(resource.subject.reference);
@@ -2453,7 +2461,7 @@ try {
     channelMap.put(&apos;found_final&apos;, found);
 
     if (found) {
-        var existingRecord = hasStudy(respById) ? respById : resp;
+        var existingRecord = unwrapResource(hasStudy(respById) ? respById : resp);
         var existingMrn = extractMrn(existingRecord);
         var existingModality = normalizeModality(extractModalityCode(existingRecord));
         var incomingMrn = String($(&apos;mrn&apos;) || &quot;&quot;);
