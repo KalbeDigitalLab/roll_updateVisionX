@@ -48,7 +48,7 @@ async function runUpdateFlow(ask) {
     "Tambahkan/perbarui readinessProbe (tcpSocket) ke ris.yaml & ris-v1.yaml? (y/n) ",
   );
   runDcm4cheeProbes = await ask.ask(
-    "Tambahkan/perbarui startup/readiness/liveness probe ke dcm4chee.yaml? (y/n) ",
+    "Tambahkan/perbarui startup/readiness/liveness probe (cek postgres via pg_isready) ke dcm4chee.yaml? (y/n) ",
   );
   runDcm4cheePostgresEnv = await ask.ask(
     "Tambahkan koneksi Postgres (initContainer wait-for-postgres + env vars) ke dcm4chee.yaml? (y/n) ",

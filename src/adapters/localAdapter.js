@@ -628,16 +628,25 @@ class LocalAdapter {
     }
   }
 
-  _buildDcm4cheeProbeBlock(indent, probeName, spec) {
-    const lines = [`${indent}${probeName}:`, `${indent}  httpGet:`];
-    lines.push(`${indent}    path: ${spec.path}`);
-    lines.push(`${indent}    port: ${spec.port}`);
-    for (const [key, value] of Object.entries(spec.fields)) {
+  _buildDcm4cheeProbeBlock(indent, probeName, fields) {
+    const lines = [
+      `${indent}${probeName}:`,
+      `${indent}  exec:`,
+      `${indent}    command:`,
+      `${indent}      - sh`,
+      `${indent}      - -c`,
+      `${indent}      - pg_isready -h "$POSTGRES_HOST" -p 5432 -U "$POSTGRES_USER"`,
+    ];
+    for (const [key, value] of Object.entries(fields)) {
       lines.push(`${indent}  ${key}: ${value}`);
     }
     return lines;
   }
 
+  // Probes run pg_isready against $POSTGRES_HOST/$POSTGRES_USER instead of
+  // dcm4chee's own /health endpoints — those report "live" even when the
+  // arc app is stuck. Requires ensureDcm4cheePostgresEnv to have set those
+  // env vars on the container first.
   async ensureDcm4cheeProbes(remoteFilename) {
     if (!remoteFilename) {
       consoleUtils.info(
@@ -680,20 +689,14 @@ class LocalAdapter {
       const probeSpecs = [
         {
           name: "startupProbe",
-          path: "/health/live",
-          port: 9990,
           fields: { failureThreshold: 60, periodSeconds: 10, timeoutSeconds: 5 },
         },
         {
           name: "readinessProbe",
-          path: "/health/ready",
-          port: 9990,
           fields: { periodSeconds: 15, timeoutSeconds: 5, failureThreshold: 3 },
         },
         {
           name: "livenessProbe",
-          path: "/health/live",
-          port: 9990,
           fields: { periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 3 },
         },
       ];
@@ -713,7 +716,7 @@ class LocalAdapter {
         const desiredBlock = this._buildDcm4cheeProbeBlock(
           indent,
           spec.name,
-          spec,
+          spec.fields,
         );
 
         const probeRegex = new RegExp(`^${indent}${spec.name}\\s*:\\s*$`);
