@@ -12,6 +12,8 @@ const env = {
   RIS_V1_IMAGE_VERSION: process.env.RIS_V1_IMAGE_VERSION,
   BLUE_HALO_IMAGE_VERSION: process.env.BLUE_HALO_IMAGE_VERSION,
   OHIF_IMAGE_VERSION: process.env.OHIF_IMAGE_VERSION,
+  ELVASOFT_DICOM_PROXY_IMAGE_VERSION:
+    process.env.ELVASOFT_DICOM_PROXY_IMAGE_VERSION,
 
   // Yaml Files
   RIS_YAML_FILE: process.env.RIS_YAML_FILE,
@@ -19,9 +21,23 @@ const env = {
   RIS_V1_YAML_FILE: process.env.RIS_V1_YAML_FILE,
   BLUE_HALO_YAML_FILE: process.env.BLUE_HALO_YAML_FILE,
   OHIF_YAML_FILE: process.env.OHIF_YAML_FILE,
+  ELVASOFT_DICOM_PROXY_YAML_FILE:
+    process.env.ELVASOFT_DICOM_PROXY_YAML_FILE ||
+    "13-elvasoft-dicom-proxy.yaml",
   DCM4CHEE_YAML_FILE: process.env.DCM4CHEE_YAML_FILE,
   DCM4CHEE_POSTGRES_HOST:
     process.env.DCM4CHEE_POSTGRES_HOST || "visionx-supabase-db.supabase",
+
+  // RIS resource limits (memory/cpu + NODE_OPTIONS) — defaults from the
+  // Elvasoft RIS RAM Exhaustion incident writeup (visionx-vault).
+  RIS_RESOURCES_REQUESTS_MEMORY:
+    process.env.RIS_RESOURCES_REQUESTS_MEMORY || "512Mi",
+  RIS_RESOURCES_REQUESTS_CPU: process.env.RIS_RESOURCES_REQUESTS_CPU || "250m",
+  RIS_RESOURCES_LIMITS_MEMORY:
+    process.env.RIS_RESOURCES_LIMITS_MEMORY || "1Gi",
+  RIS_RESOURCES_LIMITS_CPU: process.env.RIS_RESOURCES_LIMITS_CPU || "1000m",
+  RIS_NODE_MAX_OLD_SPACE_SIZE:
+    process.env.RIS_NODE_MAX_OLD_SPACE_SIZE || "800",
 
   // Supabase / PostgreSQL
   SUPABASE_HOST: process.env.SUPABASE_HOST,
@@ -31,6 +47,9 @@ const env = {
   SUPABASE_PASSWORD: process.env.SUPABASE_PASSWORD,
   SUPABASE_URL: process.env.SUPABASE_URL,
   SUPABASE_KEY: process.env.SUPABASE_KEY,
+  REALTIME_DEPLOYMENT_NAME:
+    process.env.REALTIME_DEPLOYMENT_NAME || "visionx-supabase-realtime",
+  REALTIME_NAMESPACE: process.env.REALTIME_NAMESPACE || "supabase",
 
   // Mirth
   MIRTH_HOST: process.env.MIRTH_HOST,

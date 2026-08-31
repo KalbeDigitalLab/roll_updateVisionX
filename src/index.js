@@ -9,14 +9,23 @@ const updateDatabase = require("./usecases/updateDatabase");
 const updateMirthChannel = require("./usecases/updateMirthChannel");
 const deployHelper = require("./usecases/deployHelper");
 const deployDicomSend = require("./usecases/deployDicomSend");
+const migrateDicomToNas = require("./usecases/migrateDicomToNas");
 const increaseSupabaseLimit = require("./usecases/increaseSupabaseLimit");
+const hardenSupabaseChart = require("./usecases/hardenSupabaseChart");
+const triggerAnalyticsMaintenance = require("./usecases/triggerAnalyticsMaintenance");
+const fixRealtimeMissingTenant = require("./usecases/fixRealtimeMissingTenant");
 const deleteFhirByAccession = require("./cleaner/delete_fhir_by_accession");
 const AskHelper = require("./utils/readline");
 const consoleUtils = require("./utils/consoleUtils");
+const inquirer = require("inquirer");
+const { CheckboxWithBackPrompt, BACK } = require("./utils/checkboxWithBack");
+
+inquirer.registerPrompt("checkboxWithBack", CheckboxWithBackPrompt);
 
 // Import cleaner
 const recountInstances = require("./cleaner/recount_instances");
 const backfillStarted = require("./cleaner/backfill_started");
+const runBackfillStudyDatetime = require("./cleaner/backfill_study_datetime");
 const runPatientMerge = require("./cleaner/multiplePatient.js");
 const cleanMwlStatus = require("./cleaner/clean_mwl_status");
 const runPatientCleanupSQL = require("./usecases/runPatientCleanupSQL");
@@ -32,56 +41,167 @@ async function runRisIpConfiguration(ask) {
   consoleUtils.success("RIS IP Configuration Completed.");
 }
 
+async function confirmGoBack() {
+  const { back } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "back",
+      message: "Tidak ada proses dipilih. Kembali ke menu kategori?",
+      default: true,
+    },
+  ]);
+  return back;
+}
+
 async function runUpdateFlow(ask) {
-  let runSsh, runDb, runMirth;
-  let runRecount, runBackfillStarted, runMerge, runCleanMwlStatus;
-  let runHelper, runDicomSend, runDeleteFhir;
-  let runSupabaseLimit, runRisDicomProxyEnv, runRisReadinessProbe;
-  let runDcm4cheeProbes, runDcm4cheePostgresEnv;
-
   consoleUtils.title("Konfigurasi Proses Deployment");
-  runSsh = await ask.ask("Jalankan proses Update Image? (y/n) ");
-  runRisDicomProxyEnv = await ask.ask(
-    "Tambahkan DICOM_PROXY_URL ke ris.yaml lalu redeploy? (y/n) ",
-  );
-  runRisReadinessProbe = await ask.ask(
-    "Tambahkan/perbarui readinessProbe (tcpSocket) ke ris.yaml & ris-v1.yaml? (y/n) ",
-  );
-  runDcm4cheeProbes = await ask.ask(
-    "Tambahkan/perbarui startup/readiness/liveness probe (cek postgres via pg_isready) ke dcm4chee.yaml? (y/n) ",
-  );
-  runDcm4cheePostgresEnv = await ask.ask(
-    "Tambahkan koneksi Postgres (initContainer wait-for-postgres + env vars) ke dcm4chee.yaml? (y/n) ",
-  );
-  runHelper = await ask.ask("Jalankan deploy Kubernetes Helper? (y/n) ");
-  runDicomSend = await ask.ask("Jalankan deploy Dicom Send Proxy? (y/n) ");
-  runDb = await ask.ask("Jalankan proses Database? (y/n) ");
-  runMirth = await ask.ask("Jalankan proses Mirth? (y/n) ");
-  runSupabaseLimit = await ask.ask(
-    "Jalankan Increase Supabase Storage Limit (values.yaml + helm upgrade)? (y/n) ",
-  );
 
-  consoleUtils.section("Tool Cleaner Bila Diperlukan");
-  consoleUtils.info(
-    "Langkah di bawah biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
-  );
+  // inquirer's checkbox prompt takes over stdin's raw mode; the existing
+  // readline-based AskHelper must release stdin first or its later
+  // ask.ask() calls stop receiving input once inquirer is done with it.
+  ask.close();
 
-  runRecount = await ask.ask(
-    "Jalankan proses Cleaner (Recount Instances)? (y/n) ",
-  );
-  runBackfillStarted = await ask.ask(
-    "Jalankan proses Cleaner (Backfill ImagingStudy.started dari DICOM)? (y/n) ",
-  );
-  runMerge = await ask.ask(
-    "Jalankan proses Cleaner (Patient Merge LENGKAP - PACS & DB)? (y/n) ",
-  );
-  runCleanMwlStatus = await ask.ask("You want to Clean MWL Status? (y/n) ");
-  runDeleteFhir = await ask.ask(
-    "Jalankan tool Delete FHIR by Accession? (y/n) ",
-  );
+  // Wrapped in a loop so picking "back" inside either checkbox screen
+  // restarts from the category prompt instead of the only escape being
+  // Ctrl+C — previously only the category prompt itself had a way back.
+  let category;
+  let deploymentTasks = [];
+  let cleanerTasks = [];
+
+  while (true) {
+    ({ category } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "category",
+        message: "Pilih kategori proses:",
+        choices: [
+          { name: "Deployment", value: "deployment" },
+          { name: "Tool Cleaner", value: "cleaner" },
+          { name: "Keduanya (Deployment & Tool Cleaner)", value: "both" },
+          new inquirer.Separator(),
+          { name: "Kembali ke Menu Utama", value: "back" },
+        ],
+      },
+    ]));
+
+    if (category === "back") {
+      return new AskHelper();
+    }
+
+    deploymentTasks = [];
+    cleanerTasks = [];
+    let wentBack = false;
+
+    if (category === "deployment" || category === "both") {
+      ({ deploymentTasks } = await inquirer.prompt([
+        {
+          type: "checkboxWithBack",
+          name: "deploymentTasks",
+          message:
+            'Pilih proses Deployment (spasi pilih, "a" pilih semua, "b" kembali ke menu kategori, enter tanpa pilihan juga kembali, enter untuk lanjut jika sudah ada pilihan):',
+          pageSize: 20,
+          choices: [
+            { name: "Update Image", value: "image" },
+            { name: "RIS DICOM Proxy Env (ris.yaml)", value: "risDicomProxyEnv" },
+            { name: "RIS ReadinessProbe (ris.yaml & ris-v1.yaml)", value: "risReadinessProbe" },
+            { name: "RIS Resource Limits (memory/cpu + NODE_OPTIONS, ris.yaml & ris-v1.yaml)", value: "risResourceLimits" },
+            { name: "dcm4chee Probes (startup/readiness/liveness)", value: "dcm4cheeProbes" },
+            { name: "dcm4chee Postgres Env", value: "dcm4cheePostgresEnv" },
+            { name: "Migrate DICOM Storage to NAS (NFS)", value: "migrateDicomNas" },
+            { name: "Deploy Kubernetes Helper", value: "helper" },
+            { name: "Deploy Dicom Send Proxy", value: "dicomSend" },
+            { name: "Update Database", value: "db" },
+            { name: "Update Mirth Channel", value: "mirth" },
+            { name: "Increase Supabase Storage Limit", value: "supabaseLimit" },
+            { name: "Harden Supabase Chart (Recreate + Probes)", value: "hardenSupabaseChart" },
+            { name: "Trigger Analytics Log Cleanup + Vacuum Now", value: "triggerAnalyticsMaintenance" },
+            { name: "Fix Supabase Realtime Missing Tenant (check + fix + restart)", value: "fixRealtimeTenant" },
+          ],
+        },
+      ]));
+
+      // "back" used to be a checkbox item, but Inquirer's "a" (toggle all)
+      // shortcut checks EVERY item including it — no way to exclude one
+      // choice from that shortcut in the classic checkbox prompt, so it
+      // always looked selected after "a" even though the old code filtered
+      // it back out. "b" is a dedicated shortcut handled by
+      // CheckboxWithBackPrompt; an empty Enter still asks via
+      // confirmGoBack() since that could also just be an accidental submit.
+      if (deploymentTasks === BACK) {
+        wentBack = true;
+      } else if (deploymentTasks.length === 0) {
+        wentBack = await confirmGoBack();
+      }
+    }
+
+    if (!wentBack && (category === "cleaner" || category === "both")) {
+      consoleUtils.info(
+        "Langkah cleaner biasanya hanya diperlukan untuk instalasi lama, migrasi data, atau perbaikan data produksi.",
+      );
+
+      ({ cleanerTasks } = await inquirer.prompt([
+        {
+          type: "checkboxWithBack",
+          name: "cleanerTasks",
+          message:
+            'Pilih Tool Cleaner (spasi pilih, "a" pilih semua, "b" kembali ke menu kategori, enter tanpa pilihan juga kembali, enter untuk konfirmasi jika sudah ada pilihan):',
+          pageSize: 20,
+          choices: [
+            { name: "Cleaner: Recount Instances", value: "recount" },
+            { name: "Cleaner: Backfill ImagingStudy.started dari DICOM", value: "backfillStarted" },
+            { name: "Cleaner: Backfill Study Date/Time (dcm4chee, dry run + APPLY confirm)", value: "backfillStudyDatetime" },
+            { name: "Cleaner: Patient Merge LENGKAP (PACS & DB)", value: "patientMerge" },
+            { name: "Cleaner: Clean MWL Status", value: "cleanMwlStatus" },
+            { name: "Delete FHIR Resource by Accession", value: "deleteFhir" },
+          ],
+        },
+      ]));
+
+      if (cleanerTasks === BACK) {
+        wentBack = true;
+      } else if (cleanerTasks.length === 0) {
+        wentBack = await confirmGoBack();
+      }
+    }
+
+    if (wentBack) {
+      consoleUtils.info("Kembali ke menu kategori...");
+      continue;
+    }
+
+    break;
+  }
+
+  const selectedTasks = [...deploymentTasks, ...cleanerTasks];
+
+  const runSsh = selectedTasks.includes("image") ? "y" : "n";
+  const runRisDicomProxyEnv = selectedTasks.includes("risDicomProxyEnv") ? "y" : "n";
+  const runRisReadinessProbe = selectedTasks.includes("risReadinessProbe") ? "y" : "n";
+  const runRisResourceLimits = selectedTasks.includes("risResourceLimits") ? "y" : "n";
+  const runDcm4cheeProbes = selectedTasks.includes("dcm4cheeProbes") ? "y" : "n";
+  const runDcm4cheePostgresEnv = selectedTasks.includes("dcm4cheePostgresEnv") ? "y" : "n";
+  const runMigrateDicomNas = selectedTasks.includes("migrateDicomNas") ? "y" : "n";
+  const runHelper = selectedTasks.includes("helper") ? "y" : "n";
+  const runDicomSend = selectedTasks.includes("dicomSend") ? "y" : "n";
+  const runDb = selectedTasks.includes("db") ? "y" : "n";
+  const runMirth = selectedTasks.includes("mirth") ? "y" : "n";
+  const runSupabaseLimit = selectedTasks.includes("supabaseLimit") ? "y" : "n";
+  const runHardenSupabaseChart = selectedTasks.includes("hardenSupabaseChart") ? "y" : "n";
+  const runTriggerAnalyticsMaintenance = selectedTasks.includes("triggerAnalyticsMaintenance") ? "y" : "n";
+  const runFixRealtimeTenant = selectedTasks.includes("fixRealtimeTenant") ? "y" : "n";
+  const runRecount = selectedTasks.includes("recount") ? "y" : "n";
+  const runBackfillStarted = selectedTasks.includes("backfillStarted") ? "y" : "n";
+  const runStudyDatetime = selectedTasks.includes("backfillStudyDatetime") ? "y" : "n";
+  const runMerge = selectedTasks.includes("patientMerge") ? "y" : "n";
+  const runCleanMwlStatus = selectedTasks.includes("cleanMwlStatus") ? "y" : "n";
+  const runDeleteFhir = selectedTasks.includes("deleteFhir") ? "y" : "n";
 
   consoleUtils.section("Proses Status");
   consoleUtils.info("Menjalankan proses sesuai opsi yang dipilih.");
+
+  // Fresh readline interface for any y/n / text prompts still needed below
+  // (image version, deploy confirmations, etc.) now that inquirer is done.
+  ask = new AskHelper();
 
   if (runSsh.toLowerCase() === "y") {
     consoleUtils.section("Update Image Process (No SSH)");
@@ -117,6 +237,17 @@ async function runUpdateFlow(ask) {
     consoleUtils.skipped("Skipping RIS ReadinessProbe Update process.");
   }
 
+  if (runRisResourceLimits.toLowerCase() === "y") {
+    consoleUtils.section("RIS Resource Limits Update");
+    const local = new LocalAdapter(env);
+    await local.ensureRisResourceLimits(env.RIS_YAML_FILE);
+    await local.ensureRisResourceLimits(env.RIS_V1_YAML_FILE);
+    local.syncRisTemplateFromYaml(env.RIS_YAML_FILE, env.RIS_YAML_TEMPLATE_FILE);
+    consoleUtils.success("RIS Resource Limits Update Completed.");
+  } else {
+    consoleUtils.skipped("Skipping RIS Resource Limits Update process.");
+  }
+
   if (runDcm4cheeProbes.toLowerCase() === "y") {
     consoleUtils.section("Dcm4chee Probes Update");
     const local = new LocalAdapter(env);
@@ -133,6 +264,15 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("Dcm4chee Postgres Env Update Completed.");
   } else {
     consoleUtils.skipped("Skipping Dcm4chee Postgres Env Update process.");
+  }
+
+  if (runMigrateDicomNas.toLowerCase() === "y") {
+    consoleUtils.section("Migrate DICOM Storage to NAS (NFS)");
+    const local = new LocalAdapter(env);
+    await migrateDicomToNas(local, env, ask);
+    consoleUtils.success("Migrate DICOM Storage to NAS Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Migrate DICOM Storage to NAS process.");
   }
 
   if (runHelper.toLowerCase() === "y") {
@@ -181,6 +321,40 @@ async function runUpdateFlow(ask) {
     consoleUtils.skipped("Skipping Supabase Storage Limit process.");
   }
 
+  if (runHardenSupabaseChart.toLowerCase() === "y") {
+    consoleUtils.section("Harden Supabase Chart (Recreate + Probes)");
+    await hardenSupabaseChart(ask);
+    consoleUtils.success("Harden Supabase Chart Process Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Harden Supabase Chart process.");
+  }
+
+  if (runTriggerAnalyticsMaintenance.toLowerCase() === "y") {
+    consoleUtils.section("Trigger Analytics Log Cleanup + Vacuum Now");
+    const db = new DBAdapter(env);
+    await db.connect();
+    await triggerAnalyticsMaintenance(db);
+    await db.disconnect();
+    consoleUtils.success("Analytics Log Cleanup + Vacuum Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Analytics Log Cleanup + Vacuum.");
+  }
+
+  if (runFixRealtimeTenant.toLowerCase() === "y") {
+    consoleUtils.section("Fix Supabase Realtime Missing Tenant");
+    const db = new DBAdapter(env);
+    const local = new LocalAdapter(env);
+    await db.connect();
+    try {
+      await fixRealtimeMissingTenant(db, local, env);
+    } finally {
+      await db.disconnect();
+    }
+    consoleUtils.success("Fix Supabase Realtime Missing Tenant Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Fix Supabase Realtime Missing Tenant.");
+  }
+
   if (runRecount.toLowerCase() === "y") {
     consoleUtils.section("Cleaner Process (Recount)");
     await recountInstances();
@@ -195,6 +369,14 @@ async function runUpdateFlow(ask) {
     consoleUtils.success("Cleaner Process (Backfill started) Completed.");
   } else {
     consoleUtils.skipped("Skipping Cleaner (Backfill started) process.");
+  }
+
+  if (runStudyDatetime.toLowerCase() === "y") {
+    consoleUtils.section("Cleaner Process (Backfill Study Date/Time)");
+    await runBackfillStudyDatetime();
+    consoleUtils.success("Cleaner Process (Backfill Study Date/Time) Completed.");
+  } else {
+    consoleUtils.skipped("Skipping Cleaner (Backfill Study Date/Time) process.");
   }
 
   if (runMerge.toLowerCase() === "y") {
@@ -253,27 +435,32 @@ async function runUpdateFlow(ask) {
   }
 
   consoleUtils.success("All requested deployments completed!");
+  return ask;
 }
 
 async function main() {
-  const ask = new AskHelper();
+  let ask = new AskHelper();
 
   try {
-    consoleUtils.title("VisionX Roll Updater");
-    console.log("1. Lakukan Update");
-    console.log("2. Konfigurasi IP (Deploy.sh)");
-    console.log("3. Exit");
+    let exit = false;
+    while (!exit) {
+      consoleUtils.title("VisionX Roll Updater");
+      console.log("1. Lakukan Update");
+      console.log("2. Konfigurasi IP (Deploy.sh)");
+      console.log("3. Exit");
 
-    const menuChoice = (await ask.ask("Pilih menu (1/2/3): ")).trim();
+      const menuChoice = (await ask.ask("Pilih menu (1/2/3): ")).trim();
 
-    if (menuChoice === "1") {
-      await runUpdateFlow(ask);
-    } else if (menuChoice === "2") {
-      await runRisIpConfiguration(ask);
-    } else if (menuChoice === "3") {
-      consoleUtils.info("Keluar dari program.");
-    } else {
-      consoleUtils.warn(`Pilihan tidak valid: ${menuChoice}`);
+      if (menuChoice === "1") {
+        ask = await runUpdateFlow(ask);
+      } else if (menuChoice === "2") {
+        await runRisIpConfiguration(ask);
+      } else if (menuChoice === "3") {
+        consoleUtils.info("Keluar dari program.");
+        exit = true;
+      } else {
+        consoleUtils.warn(`Pilihan tidak valid: ${menuChoice}`);
+      }
     }
   } catch (err) {
     consoleUtils.error(`Error saat eksekusi proses: ${err.message}`);

@@ -35,6 +35,11 @@ async function deployYamlFiles(adapter, config, askHelper) {
       version: config.OHIF_IMAGE_VERSION,
       optional: false,
     },
+    {
+      remote: config.ELVASOFT_DICOM_PROXY_YAML_FILE,
+      version: config.ELVASOFT_DICOM_PROXY_IMAGE_VERSION,
+      optional: true,
+    },
   ];
 
   for (const file of yamlFiles) {
@@ -46,6 +51,18 @@ async function deployYamlFiles(adapter, config, askHelper) {
     await adapter.updateAndApplyFile(file.remote, file.version, askHelper, {
       optional: file.optional,
     });
+
+    if (file.remote === config.RIS_YAML_FILE || file.remote === config.RIS_V1_YAML_FILE) {
+      consoleUtils.warn(
+        `Automatically checking/adding readinessProbe in ${file.remote} (tcpSocket probe on the detected container port). Existing readinessProbe blocks are left untouched if already present.`,
+      );
+      await adapter.ensureRisReadinessProbe(file.remote);
+
+      consoleUtils.warn(
+        `Automatically applying resources (memory/cpu requests+limits) and NODE_OPTIONS=--max-old-space-size in ${file.remote} to cap runaway memory growth (see visionx-vault OOM incident notes). This may restart the pod if current usage exceeds the new limit.`,
+      );
+      await adapter.ensureRisResourceLimits(file.remote);
+    }
 
     if (file.remote === config.RIS_YAML_FILE) {
       adapter.syncRisTemplateFromYaml(
