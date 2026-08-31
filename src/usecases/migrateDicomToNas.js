@@ -440,10 +440,18 @@ spec:
 
 function writeNfsStorageManifest(env, params) {
   const basePath = env.LOCAL_BASE_PATH;
+  const yamlPath = path.join(basePath, params.nfsStorageYamlFile);
+
+  if (isDryRun()) {
+    consoleUtils.info(
+      `[DRY_RUN] Would generate ${params.nfsStorageYamlFile} at ${yamlPath} (not written).`,
+    );
+    return yamlPath;
+  }
+
   if (!fs.existsSync(basePath)) {
     fs.mkdirSync(basePath, { recursive: true });
   }
-  const yamlPath = path.join(basePath, params.nfsStorageYamlFile);
   fs.writeFileSync(yamlPath, buildNfsStorageManifest(params), "utf8");
   consoleUtils.success(`Generated ${params.nfsStorageYamlFile} di ${yamlPath}`);
   return yamlPath;
@@ -622,6 +630,13 @@ function writeArcManifest(localAdapter, env, params) {
   const yamlPath = path.join(basePath, params.arcYamlFile);
 
   const imageTag = extractCurrentImage(localAdapter, yamlPath);
+
+  if (isDryRun()) {
+    consoleUtils.info(
+      `[DRY_RUN] Would back up ${yamlPath} and regenerate ${params.arcYamlFile} (image: ${imageTag}) — not written.`,
+    );
+    return yamlPath;
+  }
 
   if (fs.existsSync(yamlPath)) {
     const backupPath = `${yamlPath}.bak-${Date.now()}`;
