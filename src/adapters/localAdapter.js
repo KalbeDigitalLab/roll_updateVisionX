@@ -802,11 +802,16 @@ class LocalAdapter {
     }
   }
 
-  _buildDcm4cheeProbeBlock(indent, probeName, spec) {
-    const lines = [`${indent}${probeName}:`, `${indent}  httpGet:`];
-    lines.push(`${indent}    path: ${spec.path}`);
-    lines.push(`${indent}    port: ${spec.port}`);
-    for (const [key, value] of Object.entries(spec.fields)) {
+  _buildDcm4cheeProbeBlock(indent, probeName, fields) {
+    const lines = [
+      `${indent}${probeName}:`,
+      `${indent}  exec:`,
+      `${indent}    command:`,
+      `${indent}      - sh`,
+      `${indent}      - -c`,
+      `${indent}      - pg_isready -h "$POSTGRES_HOST" -p 5432 -U "$POSTGRES_USER"`,
+    ];
+    for (const [key, value] of Object.entries(fields)) {
       lines.push(`${indent}  ${key}: ${value}`);
     }
     return lines;
