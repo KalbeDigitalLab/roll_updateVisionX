@@ -805,11 +805,9 @@ class LocalAdapter {
   _buildDcm4cheeProbeBlock(indent, probeName, fields) {
     const lines = [
       `${indent}${probeName}:`,
-      `${indent}  exec:`,
-      `${indent}    command:`,
-      `${indent}      - sh`,
-      `${indent}      - -c`,
-      `${indent}      - pg_isready -h "$POSTGRES_HOST" -p 5432 -U "$POSTGRES_USER"`,
+      `${indent}  httpGet:`,
+      `${indent}    path: /health/live`,
+      `${indent}    port: 9990`,
     ];
     for (const [key, value] of Object.entries(fields)) {
       lines.push(`${indent}  ${key}: ${value}`);
@@ -817,10 +815,15 @@ class LocalAdapter {
     return lines;
   }
 
-  // Probes run pg_isready against $POSTGRES_HOST/$POSTGRES_USER instead of
-  // dcm4chee's own /health endpoints — those report "live" even when the
-  // arc app is stuck. Requires ensureDcm4cheePostgresEnv to have set those
-  // env vars on the container first.
+  // All three probes hit WildFly's own /health/live only — a shallow "is my
+  // process up and done deploying" check, never Postgres. An earlier version
+  // of this polled Postgres directly from readiness/liveness, which caused a
+  // real outage: any Postgres blip fails the probe, and with replicas:1 that
+  // takes down 100% of traffic (a full self-inflicted outage, not a partial
+  // one). Postgres is checked exactly once, at boot, via the
+  // wait-for-postgres initContainer in ensureDcm4cheePostgresEnv — never in
+  // the continuously-polled probe path. See "Arc Probe Postmortem" (Obsidian
+  // vault) for the incident this reverts.
   async ensureDcm4cheeProbes(remoteFilename) {
     if (!remoteFilename) {
       consoleUtils.info(
@@ -874,6 +877,11 @@ class LocalAdapter {
           fields: { periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 3 },
         },
       ];
+      // Note: readinessProbe deliberately uses /health/live here too, not
+      // /health/ready — /health/ready only reflects WAR-deploy status, not
+      // whether the datasource pool actually finished connecting, and chasing
+      // that gap by pointing probes at a real DB-backed endpoint is exactly
+      // what caused the outage this reverts (see comment above).
 
       let changed = false;
 
