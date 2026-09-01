@@ -806,8 +806,8 @@ class LocalAdapter {
     const lines = [
       `${indent}${probeName}:`,
       `${indent}  httpGet:`,
-      `${indent}    path: /health/live`,
-      `${indent}    port: 9990`,
+      `${indent}    path: /dcm4chee-arc/aets/DCM4CHEE/rs/patients?limit=1`,
+      `${indent}    port: 8080`,
     ];
     for (const [key, value] of Object.entries(fields)) {
       lines.push(`${indent}  ${key}: ${value}`);
@@ -815,15 +815,23 @@ class LocalAdapter {
     return lines;
   }
 
-  // All three probes hit WildFly's own /health/live only — a shallow "is my
-  // process up and done deploying" check, never Postgres. An earlier version
-  // of this polled Postgres directly from readiness/liveness, which caused a
-  // real outage: any Postgres blip fails the probe, and with replicas:1 that
-  // takes down 100% of traffic (a full self-inflicted outage, not a partial
-  // one). Postgres is checked exactly once, at boot, via the
-  // wait-for-postgres initContainer in ensureDcm4cheePostgresEnv — never in
-  // the continuously-polled probe path. See "Arc Probe Postmortem" (Obsidian
-  // vault) for the incident this reverts.
+  // All three probes hit a real QIDO-RS endpoint that queries Postgres
+  // through the app's own JDBC pool — not WildFly's /health/* (those only
+  // reflect WAR-deploy status, not whether the datasource pool actually
+  // connected, which let a broken pool report healthy while real requests
+  // 404'd). An earlier attempt pointed probes at this same DB-backed
+  // endpoint with tight thresholds (readiness ~45s) and caused a full outage
+  // (replicas:1 — any blip failed readiness, zero backends left). The fix
+  // that stuck is the same endpoint with generous tolerance instead:
+  // startupProbe absorbs first-boot WAR deploy (~10 min), readinessProbe
+  // reacts fast with low blast radius (~2 min, just pulls the pod from
+  // Service), livenessProbe is deliberately slow/high-blast-radius (~15 min)
+  // because it exists to catch the Agroal connection pool wedging after a
+  // Postgres blip and never self-healing — that state needs a JVM restart,
+  // and /health/live never observes it. Postgres is additionally checked
+  // once at boot via the wait-for-postgres initContainer in
+  // ensureDcm4cheePostgresEnv, before this container ever starts. See "Arc
+  // Probe Postmortem" (Obsidian vault) for the full incident history.
   async ensureDcm4cheeProbes(remoteFilename) {
     if (!remoteFilename) {
       consoleUtils.info(
@@ -865,23 +873,25 @@ class LocalAdapter {
 
       const probeSpecs = [
         {
+          // ~10 min budget to absorb first-boot WAR deploy before anything
+          // else reacts to a failure.
           name: "startupProbe",
-          fields: { failureThreshold: 60, periodSeconds: 10, timeoutSeconds: 5 },
+          fields: { periodSeconds: 10, timeoutSeconds: 10, failureThreshold: 60 },
         },
         {
+          // ~2 min budget — fails fast, but the effect is cheap (pod pulled
+          // from Service, no restart).
           name: "readinessProbe",
-          fields: { periodSeconds: 15, timeoutSeconds: 5, failureThreshold: 3 },
+          fields: { periodSeconds: 20, timeoutSeconds: 10, failureThreshold: 6 },
         },
         {
+          // ~15 min budget — fails slow, because the effect is destructive
+          // (container restart). Only trips for the non-self-healing case
+          // (wedged Agroal pool), not a transient Postgres blip.
           name: "livenessProbe",
-          fields: { periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 3 },
+          fields: { periodSeconds: 30, timeoutSeconds: 10, failureThreshold: 30 },
         },
       ];
-      // Note: readinessProbe deliberately uses /health/live here too, not
-      // /health/ready — /health/ready only reflects WAR-deploy status, not
-      // whether the datasource pool actually finished connecting, and chasing
-      // that gap by pointing probes at a real DB-backed endpoint is exactly
-      // what caused the outage this reverts (see comment above).
 
       let changed = false;
 
