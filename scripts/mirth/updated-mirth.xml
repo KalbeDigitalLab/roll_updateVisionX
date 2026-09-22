@@ -864,6 +864,24 @@ try {
 //    }
 //}
 
+// study.status starts as {} above; only the MWL-found branch overwrites it with
+// "available". Unscheduled studies (no_mwl=true) never reach that branch, so
+// without this fallback the {} placeholder gets sent to FHIR as-is, which the
+// server rejects with "invalid input value for enum status".
+if (!study.status || typeof study.status !== 'string') {
+    study.status = "unknown";
+}
+
+// Same issue for the audit placeholders: only the MWL-found branch fills these
+// in (line ~842); unscheduled studies would otherwise send {} to Supabase.
+if (!log_audit.user_id || typeof log_audit.user_id !== 'string') {
+    log_audit.user_id = "PACS";
+    log_audit.username = "PACS";
+    trail_audit.user_id = "PACS";
+    trail_audit.username = "PACS";
+    log_audit.action = "Unscheduled Study";
+}
+
 var accessionSupabase = "eq." + UpdatedAccessionNumber;
 channelMap.put('accessionSupabase', accessionSupabase);
 channelMap.put('fhir_study', JSON.stringify(study));
