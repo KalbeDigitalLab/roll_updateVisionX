@@ -2063,24 +2063,108 @@ function hasStudy(r) {
     if (r.resourceType === "Bundle" &amp;&amp; r.entry &amp;&amp; r.entry.length &gt; 0) return true;
     return false;
 }
+function unwrapResource(r) {
+    if (!r) return null;
+    if (r.resourceType === "Bundle" &amp;&amp; r.entry &amp;&amp; r.entry.length &gt; 0 &amp;&amp; r.entry[0].resource) {
+        return r.entry[0].resource;
+    }
+    return r;
+}
+function extractMrn(resource) {
+    if (!resource || !resource.subject || !resource.subject.reference) return "";
+    var ref = String(resource.subject.reference);
+    return ref.substring(ref.lastIndexOf("/") + 1);
+}
+function extractModalityCode(resource) {
+    if (!resource || !resource.modality) return "";
+    var m = resource.modality;
+    if (Array.isArray(m)) {
+        return (m[0] &amp;&amp; m[0].code) ? m[0].code : "";
+    }
+    return m.code || "";
+}
+function normalizeModality(code) {
+    if (!code) return "";
+    var c = String(code).toUpperCase().trim();
+    return (c === "CR" || c === "DX") ? "DX" : c;
+}
+function fetchIncomingModality(studyUID) {
+    var httpClient = null;
+    var httpResponse = null;
+    try {
+        var urlStr = "VISIONX_BASE_URL_FROM_ENV/dcm4chee-arc/aets/DCM4CHEE/rs/studies?StudyInstanceUID=" + encodeURIComponent(studyUID);
+        logger.info("[AccessionOccupied] fetchIncomingModality URL=" + urlStr);
+
+        var RequestConfig = org.apache.http.client.config.RequestConfig;
+        var HttpClients   = org.apache.http.impl.client.HttpClients;
+        var HttpGet       = org.apache.http.client.methods.HttpGet;
+        var EntityUtils   = org.apache.http.util.EntityUtils;
+
+        var config = RequestConfig.custom()
+            .setConnectTimeout(30000)
+            .setSocketTimeout(30000)
+            .build();
+
+        httpClient = HttpClients.custom().setDefaultRequestConfig(config).build();
+
+        var httpGet = new HttpGet(urlStr);
+        httpGet.setHeader("Authorization", "Bearer " + channelMap.get('keycloak_token'));
+
+        httpResponse = httpClient.execute(httpGet);
+        var entity = httpResponse.getEntity();
+        var body = entity != null ? String(EntityUtils.toString(entity, "UTF-8")) : "";
+        if (!body || body.length === 0) return "";
+
+        var parsed = safeParse(body);
+        if (parsed &amp;&amp; parsed[0] &amp;&amp; parsed[0]["00080061"] &amp;&amp; parsed[0]["00080061"].Value) {
+            return parsed[0]["00080061"].Value[0];
+        }
+        return "";
+    } catch (e) {
+        logger.error("[AccessionOccupied] fetchIncomingModality EXCEPTION: " + e);
+        return "";
+    } finally {
+        try { if (httpResponse != null) httpResponse.close(); } catch (ignore) {}
+        try { if (httpClient != null) httpClient.close(); } catch (ignore) {}
+    }
+}
 
 try {
     var resp = safeParse(respMsg);
     var found = hasStudy(resp);
 
+    var respById = null;
     if (!found) {
         var fetchByIdRaw = channelMap.get('fetchById_raw');
         if (fetchByIdRaw) {
-            var respById = safeParse(String(fetchByIdRaw));
+            respById = safeParse(String(fetchByIdRaw));
             found = hasStudy(respById);
         }
     }
 
     if (found) {
-        logger.warn("[AccessionOccupied] REJECTED â€” accession occupied by different StudyUID. incomingStudyUID=" + studyID);
-        channelMap.put('rejectStudy', true);
-        channelMap.put('rejectCode', 'REJECT_ACCESSION_OCCUPIED_DIFFERENT_STUDY');
-        channelMap.put('rejectReason', 'Accession already has images from another DICOM StudyInstanceUID.');
+        var existingRecord = unwrapResource(hasStudy(respById) ? respById : resp);
+        var existingMrn = extractMrn(existingRecord);
+        var existingModality = normalizeModality(extractModalityCode(existingRecord));
+        var incomingMrn = String(channelMap.get('mrn') || '');
+        var incomingModality = normalizeModality(fetchIncomingModality(studyID));
+
+        var sameEncounter = !!existingMrn &amp;&amp; !!incomingMrn &amp;&amp; (existingMrn === incomingMrn)
+            &amp;&amp; !!existingModality &amp;&amp; !!incomingModality &amp;&amp; (existingModality === incomingModality);
+
+        logger.info("[AccessionOccupied] existingMrn=" + existingMrn + " incomingMrn=" + incomingMrn
+            + " existingModality=" + existingModality + " incomingModality=" + incomingModality
+            + " sameEncounter=" + sameEncounter);
+
+        if (sameEncounter) {
+            logger.info("[AccessionOccupied] Same patient+modality on occupied accession - treating as normal resync, not a conflict.");
+            channelMap.put('no_study', true);
+        } else {
+            logger.warn("[AccessionOccupied] REJECTED - accession occupied by different StudyUID/patient/modality. incomingStudyUID=" + studyID);
+            channelMap.put('rejectStudy', true);
+            channelMap.put('rejectCode', 'REJECT_ACCESSION_OCCUPIED_DIFFERENT_STUDY');
+            channelMap.put('rejectReason', 'Accession already has images from another DICOM StudyInstanceUID.');
+        }
     } else {
         channelMap.put('no_study', true);
     }
@@ -3932,20 +4016,8 @@ if (isErrorFlag === true) {
 return true;</script>
           </com.mirth.connect.plugins.javascriptrule.JavaScriptRule>
           <com.mirth.connect.plugins.javascriptrule.JavaScriptRule version="4.5.2">
-            <sequenceNumber>1</sequenceNumber>
-            <enabled>true</enabled>
-            <operator>AND</operator>
-            <script>// Phase 4: Create Procedure ONLY for scheduled/order studies; skip for unscheduled studies
-var noMWL = String(channelMap.get('no_mwl')).toLowerCase() === 'true';
-
-if (noMWL === true) {
-    return false; // Unscheduled study -&gt; skip Procedure creation
-}
-return true;</script>
-          </com.mirth.connect.plugins.javascriptrule.JavaScriptRule>
-          <com.mirth.connect.plugins.javascriptrule.JavaScriptRule version="4.5.2">
             <name>Reject Study Guard</name>
-            <sequenceNumber>2</sequenceNumber>
+            <sequenceNumber>1</sequenceNumber>
             <enabled>true</enabled>
             <operator>AND</operator>
             <script>// Block all clinical writes if this study has been flagged for rejection
