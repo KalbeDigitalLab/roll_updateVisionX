@@ -2283,13 +2283,13 @@ return true;</script>
           <entry>
             <string>apikey</string>
             <list>
-              <string>SUPABASE_API_KEY_FROM_ENV</string>
+              <string>SUPABASE_KEY_FROM_ENV</string>
             </list>
           </entry>
           <entry>
             <string>Authorization</string>
             <list>
-              <string>Bearer SUPABASE_API_KEY_FROM_ENV</string>
+              <string>Bearer SUPABASE_KEY_FROM_ENV</string>
             </list>
           </entry>
           <entry>
