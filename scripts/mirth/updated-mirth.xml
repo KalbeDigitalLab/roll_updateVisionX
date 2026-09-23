@@ -2214,8 +2214,8 @@ try {
         var isIdempotentResend = !!existingStudyUID &amp;&amp; (existingStudyUID === studyID);
 
         if (isIdempotentResend) {
-            logger.info("[AccessionOccupied] IDEMPOTENT RESEND - existingStudyUID=" + existingStudyUID + " matches incoming. Treating as normal resync.");
-            channelMap.put('no_study', true);
+            logger.info("[AccessionOccupied] IDEMPOTENT RESEND - existingStudyUID=" + existingStudyUID + " matches incoming. Study already up-to-date, skipping rewrite.");
+            channelMap.put('no_study', false);
         } else {
             var existingMrn = extractMrn(existingRecord);
             var existingModality = normalizeModality(extractModalityCode(existingRecord));
