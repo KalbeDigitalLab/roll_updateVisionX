@@ -325,7 +325,7 @@ class MirthAdapter {
         }
       }
 
-      if (["9", "10", "11"].includes(id)) {
+      if (["9", "10", "11", "22"].includes(id)) {
         this._replaceConnectorHeader(conn, "apiKey", this.config.SUPABASE_KEY);
       }
     }

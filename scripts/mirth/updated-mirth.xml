@@ -2281,15 +2281,9 @@ return true;</script>
             </list>
           </entry>
           <entry>
-            <string>apikey</string>
+            <string>apiKey</string>
             <list>
               <string>SUPABASE_KEY_FROM_ENV</string>
-            </list>
-          </entry>
-          <entry>
-            <string>Authorization</string>
-            <list>
-              <string>Bearer SUPABASE_KEY_FROM_ENV</string>
             </list>
           </entry>
           <entry>
