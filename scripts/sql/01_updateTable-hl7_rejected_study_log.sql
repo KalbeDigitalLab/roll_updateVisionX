@@ -70,7 +70,16 @@ CREATE INDEX IF NOT EXISTS idx_hl7_rejected_study_log_reject_code
   ON public.hl7_rejected_study_log (reject_code);
 
 -- Idempotency: the Mirth channel POSTs with ?on_conflict=rejection_key and
--- Prefer: resolution=merge-duplicates, which requires this unique index to exist.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_hl7_rejected_study_log_rejection_key
-  ON public.hl7_rejected_study_log (rejection_key)
-  WHERE rejection_key IS NOT NULL;
+-- Prefer: resolution=merge-duplicates, which requires this unique index to
+-- exist AND be unconditional -- Postgres refuses to use a partial/predicated
+-- unique index as an ON CONFLICT (rejection_key) arbiter (error 42P10:
+-- "there is no unique or exclusion constraint matching the ON CONFLICT
+-- specification"), which a `WHERE rejection_key IS NOT NULL` predicate here
+-- used to trigger. Dropping the predicate doesn't change behavior --
+-- Postgres already excludes NULLs from uniqueness checks by default -- it
+-- just makes the index usable as a conflict target. Drop-then-recreate
+-- (rather than CREATE ... IF NOT EXISTS) so this also repairs a database
+-- that already has the old partial index under this name.
+DROP INDEX IF EXISTS idx_hl7_rejected_study_log_rejection_key;
+CREATE UNIQUE INDEX idx_hl7_rejected_study_log_rejection_key
+  ON public.hl7_rejected_study_log (rejection_key);
