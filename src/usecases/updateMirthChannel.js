@@ -5,13 +5,18 @@ const consoleUtils = require("../utils/consoleUtils");
 /**
  * Update the `mirth-vision` Mirth Connect channel in place:
  *
- *   1. If the channel already exists, delete it (so the re-import is clean).
+ *   1. Check whether the channel already exists (by name).
  *   2. Parse `updated-mirth.xml` — this is the "Channel + Code Template
  *      Libraries" export produced by Mirth Administrator, so it usually
  *      contains bundled libraries (e.g. moment.js) inside `<exportData>`.
  *   3. Import the code-template libraries FIRST, so that when the channel
- *      is re-imported its transformers can reference `moment()` etc.
- *   4. Import the channel (stripped of `<exportData>`).
+ *      is updated its transformers can reference `moment()` etc.
+ *   4. If the channel exists, update it in place (PUT); otherwise create it
+ *      (POST). Updating in place -- rather than deleting and recreating --
+ *      preserves the channel's message history in Mirth. Deleting the
+ *      channel drops its message store even when the re-imported XML has
+ *      the same <id>, because POST /api/channels always creates a fresh
+ *      channel rather than resuming an existing one.
  *   5. Deploy using the channel-ID set in `channel-mirth.xml`.
  *
  * This ordering matches what Mirth Administrator does on the wire when you
@@ -32,10 +37,6 @@ async function updateMirthChannel(mirthAdapter) {
   );
 
   const channelId = await mirthAdapter.getChannelIdByName(channelName);
-  if (channelId) {
-    await mirthAdapter.deleteChannel(channelId);
-    consoleUtils.success(`Deleted old channel: ${channelName}`);
-  }
 
   const { channelXml, libraries } = await mirthAdapter.modifyChannelXml(
     newXmlPath,
@@ -49,8 +50,15 @@ async function updateMirthChannel(mirthAdapter) {
     );
   }
 
-  await mirthAdapter.importChannel(channelXml);
-  consoleUtils.success("Imported new channel");
+  if (channelId) {
+    await mirthAdapter.updateChannel(channelId, channelXml);
+    consoleUtils.success(
+      `Updated existing channel in place: ${channelName} (message history preserved)`,
+    );
+  } else {
+    await mirthAdapter.importChannel(channelXml);
+    consoleUtils.success("Imported new channel");
+  }
 
   const deployXml = fs.readFileSync(deployXmlPath, "utf8");
   await mirthAdapter.deployChannels(deployXml);

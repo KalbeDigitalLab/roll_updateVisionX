@@ -128,6 +128,37 @@ class MirthAdapter {
   }
 
   /**
+   * Update an EXISTING channel in place -- the same endpoint Mirth
+   * Administrator's own "Save Channel" button uses. Unlike deleteChannel +
+   * importChannel (which drops the channel and recreates it, wiping its
+   * message history even though the re-imported XML has the same <id>),
+   * this never deletes the channel, so its message store is preserved.
+   * `override=true` bypasses Mirth's optimistic-lock revision check, which
+   * would otherwise reject the PUT if the channel was touched by anything
+   * else (e.g. the Administrator GUI) since this tool last read it.
+   */
+  async updateChannel(channelId, xmlString) {
+    const headers = {
+      ...this.headers,
+      "Content-Type": "application/xml",
+      Accept: "application/json",
+    };
+    try {
+      return await axios.put(
+        `${this.baseUrl}/channels/${channelId}?override=true`,
+        xmlString,
+        { headers, httpsAgent: this.httpsAgent },
+      );
+    } catch (err) {
+      this._logAxiosError(
+        `updateChannel (PUT /api/channels/${channelId}?override=true)`,
+        err,
+      );
+      throw err;
+    }
+  }
+
+  /**
    * Bulk-import code template libraries (and their templates) that are bundled
    * inside a Mirth channel export's <exportData><codeTemplateLibraries>…</> block.
    *
