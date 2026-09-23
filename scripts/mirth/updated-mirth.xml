@@ -1305,8 +1305,8 @@ try {
             <sequenceNumber>0</sequenceNumber>
             <enabled>true</enabled>
             <script>var respMsg = response.getMessage();
-var patientID = patientID;
-var accessionNumber = accessionNumber;
+var patientID = String(channelMap.get('patientID') || '');
+var accessionNumber = String(channelMap.get('accessionNumber') || '');
 
 function safeParse(s) { try { return JSON.parse(s); } catch(e) { return null; } }
 
@@ -1316,10 +1316,15 @@ if (resp &amp;&amp; (resp.resourceType === "ServiceRequest" || (resp.resourceTyp
 
     var srEntry = (resp.resourceType === "Bundle") ? resp.entry[0].resource : resp;
     var existingPatientRef = (srEntry.subject &amp;&amp; srEntry.subject.reference) ? String(srEntry.subject.reference) : '';
-    var expectedPatientRef = "Patient/" + String(patientID);
+    var expectedPatientRef = "Patient/" + patientID;
 
-    if (existingPatientRef &amp;&amp; existingPatientRef.toLowerCase() !== expectedPatientRef.toLowerCase()) {
-        logger.warn("[CheckServiceRequestExist] REJECTED â€” patient mismatch for accession " + accessionNumber + ". Existing=" + existingPatientRef + " Incoming=" + expectedPatientRef);
+    // Store srPatientId/srStatus for downstream connector #20 (New object if patient not match)
+    var srPatientIdFromRef = existingPatientRef ? existingPatientRef.replace('Patient/', '') : '';
+    channelMap.put('srPatientId', srPatientIdFromRef);
+    channelMap.put('srStatus', srEntry.status || '');
+
+    if (existingPatientRef &amp;&amp; patientID &amp;&amp; existingPatientRef.toLowerCase() !== expectedPatientRef.toLowerCase()) {
+        logger.warn("[CheckServiceRequestExist] REJECTED - patient mismatch for accession " + accessionNumber + ". Existing=" + existingPatientRef + " Incoming=" + expectedPatientRef);
         channelMap.put('rejectStudy', true);
         channelMap.put('rejectCode', 'REJECT_PATIENT_MISMATCH');
         channelMap.put('rejectReason', 'Accession already belongs to a different patient.');
@@ -1418,7 +1423,7 @@ return true;</script>
           <entry>
             <string>identifier</string>
             <list>
-              <string>http://hospital.smarthealth.org/study-id|${studyID}</string>
+              <string>${studyID}</string>
             </list>
           </entry>
         </parameters>
@@ -1511,15 +1516,15 @@ return true;</script>
             <sequenceNumber>0</sequenceNumber>
             <enabled>true</enabled>
             <script>var respMsg = response.getMessage();
-var studyID = studyID;
-var accessionNumber = accessionNumber;
+var studyID = String(channelMap.get('studyID') || '');
+var accessionNumber = String(channelMap.get('accessionNumber') || '');
 
 function safeParse(s) { try { return JSON.parse(s); } catch(e) { return null; } }
 
 var resp = safeParse(respMsg);
 if (resp &amp;&amp; (resp.resourceType === "ImagingStudy" || (resp.resourceType === "Bundle" &amp;&amp; resp.entry &amp;&amp; resp.entry.length &gt; 0))) {
     var studyEntry = (resp.resourceType === "Bundle") ? resp.entry[0].resource : resp;
-    
+
     var existingAcc = '';
     if (studyEntry.identifier &amp;&amp; studyEntry.identifier.length &gt; 0) {
         for (var i = 0; i &lt; studyEntry.identifier.length; i++) {
@@ -1531,11 +1536,19 @@ if (resp &amp;&amp; (resp.resourceType === "ImagingStudy" || (resp.resourceType 
     }
 
     var incomingAcc = String(accessionNumber || '');
-    if (existingAcc &amp;&amp; incomingAcc &amp;&amp; existingAcc.toLowerCase() !== incomingAcc.toLowerCase()) {
-        logger.warn("[CheckStudyExist] REJECTED â€” StudyInstanceUID " + studyID + " already occupied under accession " + existingAcc);
+    var existingIsPlaceholder = existingAcc.toLowerCase().endsWith('-unscheduled');
+    if (existingAcc &amp;&amp; incomingAcc &amp;&amp; !existingIsPlaceholder &amp;&amp; existingAcc.toLowerCase() !== incomingAcc.toLowerCase()) {
+        logger.warn("[CheckStudyExist] REJECTED - StudyInstanceUID " + studyID + " already occupied under accession " + existingAcc);
         channelMap.put('rejectStudy', true);
         channelMap.put('rejectCode', 'REJECT_STUDY_UID_OCCUPIED_DIFFERENT_ACCESSION');
         channelMap.put('rejectReason', 'DICOM StudyInstanceUID already exists with another accession or patient.');
+    } else if (existingAcc &amp;&amp; incomingAcc &amp;&amp; existingIsPlaceholder &amp;&amp; existingAcc.toLowerCase() !== incomingAcc.toLowerCase()) {
+        // StudyUID exists under a -unscheduled placeholder but incoming accession is different.
+        // Reject for safety -- manual reconciliation required rather than an automatic upgrade.
+        logger.warn("[CheckStudyExist] REJECTED - StudyUID " + studyID + " exists under placeholder " + existingAcc + " but incoming accession is different (" + incomingAcc + "). Manual reconciliation required.");
+        channelMap.put('rejectStudy', true);
+        channelMap.put('rejectCode', 'REJECT_STUDY_UID_OCCUPIED_PLACEHOLDER');
+        channelMap.put('rejectReason', 'DICOM StudyInstanceUID already exists under an unscheduled placeholder accession. Manual reconciliation required.');
     }
 }</script>
           </com.mirth.connect.plugins.javascriptstep.JavaScriptStep>
@@ -2076,7 +2089,7 @@ return true;</script>
             <sequenceNumber>0</sequenceNumber>
             <enabled>true</enabled>
             <script>var respMsg = response.getMessage();
-var studyID = String(studyID || '');
+var studyID = String(channelMap.get('studyID') || '');
 
 function safeParse(s) { try { return JSON.parse(s); } catch(e) { return null; } }
 function hasStudy(r) {
