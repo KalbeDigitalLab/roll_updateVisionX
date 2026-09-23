@@ -1418,7 +1418,7 @@ return true;</script>
           <entry>
             <string>identifier</string>
             <list>
-              <string>${studyID}</string>
+              <string>http://hospital.smarthealth.org/study-id|${studyID}</string>
             </list>
           </entry>
         </parameters>
@@ -2097,6 +2097,15 @@ function extractMrn(resource) {
     var ref = String(resource.subject.reference);
     return ref.substring(ref.lastIndexOf("/") + 1);
 }
+function extractStudyId(resource) {
+    if (!resource || !resource.identifier) return "";
+    for (var i = 0; i &lt; resource.identifier.length; i++) {
+        if (resource.identifier[i].system === "http://hospital.smarthealth.org/study-id") {
+            return String(resource.identifier[i].value || "");
+        }
+    }
+    return "";
+}
 function extractModalityCode(resource) {
     if (!resource || !resource.modality) return "";
     var m = resource.modality;
@@ -2152,6 +2161,20 @@ function fetchIncomingModality(studyUID) {
 }
 
 try {
+    // An earlier connector (e.g. Check Service Request Exist's patient-mismatch
+    // check) may have already made the reject decision for this message. This
+    // connector's own check is accession-scoped, not studyUID-scoped, so it
+    // must not run at all once rejectStudy is already true -- otherwise it
+    // unconditionally overwrites rejectCode/rejectReason with its own
+    // generic determination, clobbering a more specific and already-correct
+    // rejection (e.g. REJECT_PATIENT_MISMATCH getting overwritten with
+    // REJECT_ACCESSION_OCCUPIED_DIFFERENT_STUDY).
+    var alreadyRejected = String(channelMap.get('rejectStudy')).toLowerCase() === 'true';
+
+    if (alreadyRejected) {
+        logger.info("[AccessionOccupied] Skipped - rejectStudy already set by an earlier connector.");
+    } else {
+
     var resp = safeParse(respMsg);
     var found = hasStudy(resp);
 
@@ -2166,29 +2189,48 @@ try {
 
     if (found) {
         var existingRecord = unwrapResource(hasStudy(respById) ? respById : resp);
-        var existingMrn = extractMrn(existingRecord);
-        var existingModality = normalizeModality(extractModalityCode(existingRecord));
-        var incomingMrn = String(channelMap.get('mrn') || '');
-        var incomingModality = normalizeModality(fetchIncomingModality(studyID));
 
-        var sameEncounter = !!existingMrn &amp;&amp; !!incomingMrn &amp;&amp; (existingMrn === incomingMrn)
-            &amp;&amp; !!existingModality &amp;&amp; !!incomingModality &amp;&amp; (existingModality === incomingModality);
+        // Direct check first: is this literally a resend of the exact same
+        // study (same StudyInstanceUID already stored under this accession)?
+        // This must be checked before the patient+modality heuristic below --
+        // fetchIncomingModality() depends on dcm4chee having the study
+        // indexed yet, which isn't guaranteed (and never true in dummy-data
+        // testing), so relying on it alone would reject a true idempotent
+        // resend just because the modality lookup came back empty.
+        var existingStudyUID = extractStudyId(existingRecord);
+        var isIdempotentResend = !!existingStudyUID &amp;&amp; (existingStudyUID === studyID);
 
-        logger.info("[AccessionOccupied] existingMrn=" + existingMrn + " incomingMrn=" + incomingMrn
-            + " existingModality=" + existingModality + " incomingModality=" + incomingModality
-            + " sameEncounter=" + sameEncounter);
-
-        if (sameEncounter) {
-            logger.info("[AccessionOccupied] Same patient+modality on occupied accession - treating as normal resync, not a conflict.");
+        if (isIdempotentResend) {
+            logger.info("[AccessionOccupied] IDEMPOTENT RESEND - existingStudyUID=" + existingStudyUID + " matches incoming. Treating as normal resync.");
             channelMap.put('no_study', true);
         } else {
-            logger.warn("[AccessionOccupied] REJECTED - accession occupied by different StudyUID/patient/modality. incomingStudyUID=" + studyID);
-            channelMap.put('rejectStudy', true);
-            channelMap.put('rejectCode', 'REJECT_ACCESSION_OCCUPIED_DIFFERENT_STUDY');
-            channelMap.put('rejectReason', 'Accession already has images from another DICOM StudyInstanceUID.');
+            var existingMrn = extractMrn(existingRecord);
+            var existingModality = normalizeModality(extractModalityCode(existingRecord));
+            var incomingMrn = String(channelMap.get('mrn') || '');
+            var incomingModality = normalizeModality(fetchIncomingModality(studyID));
+
+            var sameEncounter = !!existingMrn &amp;&amp; !!incomingMrn &amp;&amp; (existingMrn === incomingMrn)
+                &amp;&amp; !!existingModality &amp;&amp; !!incomingModality &amp;&amp; (existingModality === incomingModality);
+
+            logger.info("[AccessionOccupied] existingStudyUID=" + existingStudyUID + " incomingStudyUID=" + studyID
+                + " existingMrn=" + existingMrn + " incomingMrn=" + incomingMrn
+                + " existingModality=" + existingModality + " incomingModality=" + incomingModality
+                + " sameEncounter=" + sameEncounter);
+
+            if (sameEncounter) {
+                logger.info("[AccessionOccupied] Same patient+modality on occupied accession - treating as normal resync, not a conflict.");
+                channelMap.put('no_study', true);
+            } else {
+                logger.warn("[AccessionOccupied] REJECTED - accession occupied by different StudyUID/patient/modality. incomingStudyUID=" + studyID);
+                channelMap.put('rejectStudy', true);
+                channelMap.put('rejectCode', 'REJECT_ACCESSION_OCCUPIED_DIFFERENT_STUDY');
+                channelMap.put('rejectReason', 'Accession already has images from another DICOM StudyInstanceUID.');
+            }
         }
     } else {
         channelMap.put('no_study', true);
+    }
+
     }
 } catch (e) {
     logger.error("[AccessionOccupied] Exception: " + e);
