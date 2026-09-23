@@ -2461,7 +2461,7 @@ return String(channelMap.get('rejectStudy')).toLowerCase() === 'true';</script>
       </filter>
       <transportName>HTTP Sender</transportName>
       <mode>DESTINATION</mode>
-      <enabled>false</enabled>
+      <enabled>true</enabled>
       <waitForPrevious>true</waitForPrevious>
     </connector>
     <connector version="4.5.2">
