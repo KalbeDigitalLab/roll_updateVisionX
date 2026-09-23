@@ -1312,6 +1312,8 @@ function safeParse(s) { try { return JSON.parse(s); } catch(e) { return null; } 
 
 var resp = safeParse(respMsg);
 if (resp &amp;&amp; (resp.resourceType === "ServiceRequest" || (resp.resourceType === "Bundle" &amp;&amp; resp.entry &amp;&amp; resp.entry.length &gt; 0))) {
+    channelMap.put('no_service', false);
+
     var srEntry = (resp.resourceType === "Bundle") ? resp.entry[0].resource : resp;
     var existingPatientRef = (srEntry.subject &amp;&amp; srEntry.subject.reference) ? String(srEntry.subject.reference) : '';
     var expectedPatientRef = "Patient/" + String(patientID);
@@ -1322,6 +1324,8 @@ if (resp &amp;&amp; (resp.resourceType === "ServiceRequest" || (resp.resourceTyp
         channelMap.put('rejectCode', 'REJECT_PATIENT_MISMATCH');
         channelMap.put('rejectReason', 'Accession already belongs to a different patient.');
     }
+} else {
+    channelMap.put('no_service', true);
 }</script>
           </com.mirth.connect.plugins.javascriptstep.JavaScriptStep>
         </elements>
