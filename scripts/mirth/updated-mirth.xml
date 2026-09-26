@@ -1625,8 +1625,19 @@ return true;</script>
             <enabled>true</enabled>
             <script>// Store raw FHIR response body for use by Connector 19
 var respMsg = response.getMessage();
-channelMap.put('fetchById_raw', respMsg);
-logger.info("[FetchById] stored fetchById_raw, length=" + (respMsg ? respMsg.length() : 0));</script>
+var statusMatch = String($('responseStatusLine') || '').match(/\s(\d{3})(\s|$)/);
+var statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+
+if (statusCode === 404) {
+    // No ImagingStudy under this FHIR ID yet -- an expected outcome, not a failure.
+    // Connector 19 treats an empty fetchById_raw as "not found".
+    channelMap.put('fetchById_raw', '');
+    responseStatus = SENT;
+    logger.info("[FetchById] 404 - no ImagingStudy with FhirId=" + $('FhirId') + ", marking as SENT");
+} else {
+    channelMap.put('fetchById_raw', respMsg);
+    logger.info("[FetchById] stored fetchById_raw, status=" + statusCode + ", length=" + (respMsg ? respMsg.length() : 0));
+}</script>
           </com.mirth.connect.plugins.javascriptstep.JavaScriptStep>
         </elements>
         <inboundTemplate encoding="base64"></inboundTemplate>
