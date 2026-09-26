@@ -3139,8 +3139,8 @@ var resp = response.getMessage();
 var dcm4cheeData = JSON.parse(resp);
 
 // Parse pre-existing study and serviceRequest FHIR objects from the channelMap
-var study = JSON.parse(fhir_study);
-var serviceRequest = JSON.parse(fhir_service_request);
+var study = JSON.parse($('fhir_study'));
+var serviceRequest = JSON.parse($('fhir_service_request'));
 
 var modalityCode = "";
 
