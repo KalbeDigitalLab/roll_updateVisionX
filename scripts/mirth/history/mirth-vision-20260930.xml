@@ -2,8 +2,8 @@
   <id>c074f1b3-6c09-49b7-b4b6-9c0ee22dc133</id>
   <nextMetaDataId>23</nextMetaDataId>
   <name>mirth-vision</name>
-  <description>mirth-vision-2026-09-30</description>
-  <revision>9</revision>
+  <description>mirth-vision-2026-09-22</description>
+  <revision>8</revision>
   <sourceConnector version="4.5.2">
     <metaDataId>0</metaDataId>
     <name>sourceConnector</name>
@@ -3192,27 +3192,26 @@ if (dcm4cheeData[0] &amp;&amp; dcm4cheeData[0]["00080030"] &amp;&amp; dcm4cheeDa
     studyTime = dcm4cheeData[0]["00080030"].Value[0];
 }
 
-// Same shape as the pre-2026-09-22 channel. The FHIR server is R4, where
-// ImagingStudy.modality is a Coding (not a CodeableConcept) and ServiceRequest
-// has no modality element -- a {"coding": [...]} wrapper is silently stripped
-// to an empty {} and ServiceRequest.modality is dropped entirely.
 if (modalityCode !== "") {
-    study.modality = {};
-    study.modality.code = modalityCode;
-
-    serviceRequest.extension = [
+    study.modality = [
         {
-            "url": "http://example.org/fhir/StructureDefinition/modality",
-            "valueCodeableConcept": {
-                "coding": [
-                    {
-                        "system": "http://dicom.nema.org/resources/ontology/DCM",
-                        "code": modalityCode
-                    }
-                ]
-            }
+            "coding": [
+                {
+                    "system": "http://dicom.nema.org/resources/ontology/DCM",
+                    "code": modalityCode
+                }
+            ]
         }
     ];
+
+    serviceRequest.modality = {
+        "coding": [
+            {
+                "system": "http://dicom.nema.org/resources/ontology/DCM",
+                "code": modalityCode
+            }
+        ]
+    };
 }
 
 if (studyDescription !== null) {
@@ -3220,8 +3219,6 @@ if (studyDescription !== null) {
     serviceRequest.code = {
         "coding": [
             {
-                "code": "24531-6",
-                "system": "http://loinc.org",
                 "display": studyDescription
             }
         ]
