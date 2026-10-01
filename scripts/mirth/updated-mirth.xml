@@ -3829,8 +3829,29 @@ if (isErrorFlag === true) {
 return true;</script>
           </com.mirth.connect.plugins.javascriptrule.JavaScriptRule>
           <com.mirth.connect.plugins.javascriptrule.JavaScriptRule version="4.5.2">
-            <name>Reject Study Guard</name>
+            <name>Unscheduled Only</name>
             <sequenceNumber>1</sequenceNumber>
+            <enabled>true</enabled>
+            <operator>AND</operator>
+            <script>// Only write Procedure for a true unscheduled study (no ImagingStudy, no
+// ServiceRequest, no MWL) -- same gate as Service Request HTTP Sender.
+// When a ServiceRequest exists the RIS owns the Procedure (Process Study
+// creates it with basedOn/performer/sps-id); writing ours would overwrite it
+// without basedOn, since basedOn is only set by the ServiceRequest sender's
+// response, and the worklist RPC would lose the order/image link.
+var noMWL = $('no_mwl');
+var nostudy = $('no_study');
+var noservice = $('no_service');
+
+if ( nostudy == true &amp;&amp; noservice == true) {
+	return noMWL;
+} else {
+	return false;
+}</script>
+          </com.mirth.connect.plugins.javascriptrule.JavaScriptRule>
+          <com.mirth.connect.plugins.javascriptrule.JavaScriptRule version="4.5.2">
+            <name>Reject Study Guard</name>
+            <sequenceNumber>2</sequenceNumber>
             <enabled>true</enabled>
             <operator>AND</operator>
             <script>// Block all clinical writes if this study has been flagged for rejection
