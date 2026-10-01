@@ -1253,6 +1253,20 @@ if (resp &amp;&amp; (resp.resourceType === "ServiceRequest" || (resp.resourceTyp
         channelMap.put('rejectCode', 'REJECT_PATIENT_MISMATCH');
         channelMap.put('rejectReason', 'Accession already belongs to a different patient.');
     }
+
+    // A completed ServiceRequest means the RIS already processed this order
+    // (Process Study), so the study is scheduled even when Check MWL Exist found
+    // no MWL item -- mark it available, as the pre-2026-09-22 channel did.
+    // Without this, a missing MWL item leaves the study "unknown" and the
+    // worklist never reaches Done.
+    if (String(srEntry.status) === 'completed' &amp;&amp; String(channelMap.get('rejectStudy')).toLowerCase() !== 'true') {
+        var study = JSON.parse($('fhir_study'));
+        var log_audit = JSON.parse($('audit_log'));
+        study.status = "available";
+        log_audit.action = "Processed Study";
+        channelMap.put('fhir_study', JSON.stringify(study));
+        channelMap.put('audit_log', JSON.stringify(log_audit));
+    }
 } else {
     channelMap.put('no_service', true);
 }</script>
