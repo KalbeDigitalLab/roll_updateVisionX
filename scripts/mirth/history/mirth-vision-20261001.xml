@@ -2,8 +2,8 @@
   <id>c074f1b3-6c09-49b7-b4b6-9c0ee22dc133</id>
   <nextMetaDataId>23</nextMetaDataId>
   <name>mirth-vision</name>
-  <description>mirth-vision-2026-10-01</description>
-  <revision>10</revision>
+  <description>mirth-vision-2026-09-30</description>
+  <revision>9</revision>
   <sourceConnector version="4.5.2">
     <metaDataId>0</metaDataId>
     <name>sourceConnector</name>
@@ -3228,15 +3228,11 @@ if (studyDescription !== null) {
     };
 }
 
-// If DICOM date &amp; time are found, combine them and override study.started (EXAM IMAGES)
-if (studyDate &amp;&amp; studyTime) {
-    // Extract YYYYMMDD + HHmmss (stripping millisecond decimals)
-    var rawStart = studyDate + studyTime.split('.')[0];
-    var dicomMoment = moment.utc(rawStart, 'YYYYMMDDHHmmss', true);
-
-    if (dicomMoment.isValid()) {
-        study.started = dicomMoment.toISOString(); // Overrides OBR.7 HL7 timestamp with actual DICOM Study Time!
-    }
+if (studyDate !== null &amp;&amp; studyTime !== null) {
+    var dateTimeStr = studyDate + studyTime.substring(0, 6);
+    var formattedStarted = moment.utc(dateTimeStr, "YYYYMMDDHHmmss").toISOString();
+    study.started = formattedStarted;
+    serviceRequest.occurrenceDateTime = formattedStarted;
 }
 
 channelMap.put('fhir_study', JSON.stringify(study));
