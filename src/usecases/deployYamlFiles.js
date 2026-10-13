@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const consoleUtils = require("../utils/consoleUtils");
 
 /**
@@ -40,6 +42,11 @@ async function deployYamlFiles(adapter, config, askHelper) {
       version: config.ELVASOFT_DICOM_PROXY_IMAGE_VERSION,
       optional: true,
     },
+    {
+      remote: config.ELVASOFT_HELPER_YAML_FILE,
+      version: config.ELVASOFT_HELPER_IMAGE_VERSION,
+      optional: true,
+    },
   ];
 
   for (const file of yamlFiles) {
@@ -48,6 +55,19 @@ async function deployYamlFiles(adapter, config, askHelper) {
       continue;
     }
     consoleUtils.section(`Image file: ${file.remote}`);
+
+    // Runs BEFORE the image prompt on purpose: it may apply the file, and that
+    // must not happen after the operator picked a new tag and declined to deploy.
+    if (
+      file.remote === config.ELVASOFT_HELPER_YAML_FILE &&
+      fs.existsSync(path.join(adapter.remoteBasePath, file.remote))
+    ) {
+      consoleUtils.warn(
+        `Automatically checking/adding the events rule (get/list/watch) to the ClusterRole in ${file.remote}. The RIS log collector needs it to read pod events. Nothing is applied if the rule is already present.`,
+      );
+      await adapter.ensureHelperEventsRule(file.remote);
+    }
+
     await adapter.updateAndApplyFile(file.remote, file.version, askHelper, {
       optional: file.optional,
     });
