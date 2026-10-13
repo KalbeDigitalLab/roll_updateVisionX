@@ -3,13 +3,24 @@ const path = require("path");
 const { execSync } = require("child_process");
 const consoleUtils = require("../utils/consoleUtils");
 
-async function deployHelper(env) {
-  const basePath = process.env.LOCAL_BASE_PATH;
+/**
+ * Deploys the Kubernetes Helper.
+ *
+ * The manifest below is only a template for a FRESH install: it is written out
+ * when the helper yaml does not exist yet. An existing manifest is never
+ * overwritten — it holds whatever image tag the operator set and any manual
+ * edits, which a regenerated file would silently reset (the template pins
+ * image tag 1.0.0, which predates the /ris-log endpoints). Existing files are
+ * patched in place instead (see LocalAdapter.ensureHelperEventsRule).
+ */
+async function deployHelper(adapter, env) {
+  const basePath = env.LOCAL_BASE_PATH;
   if (!basePath) {
     throw new Error("Missing required environment variable: LOCAL_BASE_PATH");
   }
 
-  const yamlPath = path.join(basePath, "12-helper.yaml");
+  const yamlFile = env.ELVASOFT_HELPER_YAML_FILE;
+  const yamlPath = path.join(basePath, yamlFile);
 
   if (!fs.existsSync(basePath)) {
     fs.mkdirSync(basePath, { recursive: true });
@@ -43,6 +54,9 @@ rules:
 - apiGroups: [""]
   resources: ["namespaces"]
   verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -122,11 +136,22 @@ spec:
   type: NodePort`;
 
   try {
-    fs.writeFileSync(yamlPath, yamlContent);
-    consoleUtils.info(`✅ 12-helper.yaml berhasil di-generate di ${yamlPath}`);
+    // True when ensureHelperEventsRule already applied the patched file.
+    let appliedByPatch = false;
 
-    // Apply YAML
-    execSync(`kubectl apply -f ${yamlPath}`, { stdio: "inherit" });
+    if (fs.existsSync(yamlPath)) {
+      consoleUtils.info(
+        `${yamlFile} sudah ada di ${yamlPath} — tidak ditimpa (image tag dan edit manual dipertahankan).`,
+      );
+      appliedByPatch = await adapter.ensureHelperEventsRule(yamlFile);
+    } else {
+      fs.writeFileSync(yamlPath, yamlContent);
+      consoleUtils.info(`✅ ${yamlFile} berhasil di-generate di ${yamlPath}`);
+    }
+
+    if (!appliedByPatch) {
+      execSync(`kubectl apply -f ${yamlPath}`, { stdio: "inherit" });
+    }
     consoleUtils.success("✅ Kubernetes Helper Deployment Selesai.");
   } catch (error) {
     consoleUtils.error(`Gagal melakukan deploy Helper: ${error.message}`);

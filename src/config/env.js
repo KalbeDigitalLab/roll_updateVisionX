@@ -24,6 +24,8 @@ const env = {
   ELVASOFT_DICOM_PROXY_YAML_FILE:
     process.env.ELVASOFT_DICOM_PROXY_YAML_FILE ||
     "13-elvasoft-dicom-proxy.yaml",
+  ELVASOFT_HELPER_YAML_FILE:
+    process.env.ELVASOFT_HELPER_YAML_FILE || "12-helper.yaml",
   DCM4CHEE_YAML_FILE: process.env.DCM4CHEE_YAML_FILE,
   DCM4CHEE_POSTGRES_HOST:
     process.env.DCM4CHEE_POSTGRES_HOST || "visionx-supabase-db.supabase",
