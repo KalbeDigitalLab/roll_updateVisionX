@@ -1156,6 +1156,168 @@ class LocalAdapter {
     }
   }
 
+  /**
+   * Reads the YAML list stored under `key` inside one ClusterRole `rules:` item,
+   * in either flow style (`verbs: ["get", "list"]`) or block style (`- get`).
+   * Returns null when the key is absent. An empty-string entry (the core API
+   * group, `[""]`) comes back as "".
+   */
+  _readRuleList(itemLines, key) {
+    const keyRegex = new RegExp(`^\\s*(?:-\\s+)?${key}\\s*:\\s*(.*)$`);
+    const anyKeyRegex = /^\s*(?:-\s+)?[A-Za-z]+\s*:/;
+
+    for (let i = 0; i < itemLines.length; i++) {
+      const match = itemLines[i].match(keyRegex);
+      if (!match) continue;
+
+      const inline = match[1].replace(/\s+#.*$/, "").trim();
+      if (inline.startsWith("[")) {
+        const body = inline.slice(1, inline.endsWith("]") ? -1 : undefined).trim();
+        return body ? body.split(",").map((entry) => this._stripQuotes(entry)) : [];
+      }
+
+      const entries = [];
+      for (let j = i + 1; j < itemLines.length; j++) {
+        if (anyKeyRegex.test(itemLines[j])) break;
+        const entry = itemLines[j].match(/^\s*-\s*(.*)$/);
+        if (entry) entries.push(this._stripQuotes(entry[1].replace(/\s+#.*$/, "")));
+      }
+      return entries;
+    }
+    return null;
+  }
+
+  /**
+   * True when this `rules:` item alone lets the ServiceAccount get/list/watch
+   * core-group events ("*" counts as a match for any of the three fields).
+   */
+  _ruleGrantsCoreEventsRead(itemLines) {
+    const apiGroups = this._readRuleList(itemLines, "apiGroups") || [];
+    const resources = this._readRuleList(itemLines, "resources") || [];
+    const verbs = this._readRuleList(itemLines, "verbs") || [];
+    const covers = (list, value) => list.includes(value) || list.includes("*");
+
+    return (
+      covers(apiGroups, "") &&
+      covers(resources, "events") &&
+      ["get", "list", "watch"].every((verb) => covers(verbs, verb))
+    );
+  }
+
+  /**
+   * Pure text transform behind ensureHelperEventsRule: appends a dedicated
+   * `events` rule to the elvasoft-helper ClusterRole unless the existing rules
+   * already grant it. Existing rules are never edited — RBAC rules are
+   * additive, so a separate item is correct even next to a partial one.
+   *
+   * Returns { lines, status } where status is "added", "already-present",
+   * "no-clusterrole" or "no-rules".
+   */
+  _addHelperEventsRule(lines) {
+    const documents = [];
+    let documentStart = 0;
+    lines.forEach((line, index) => {
+      if (/^---\s*$/.test(line)) {
+        documents.push([documentStart, index]);
+        documentStart = index + 1;
+      }
+    });
+    documents.push([documentStart, lines.length]);
+
+    const clusterRole = documents.find(([start, end]) => {
+      const document = lines.slice(start, end);
+      return (
+        document.some((line) => /^kind:\s*ClusterRole\s*$/.test(line)) &&
+        document.some((line) => /^\s+name:\s*["']?elvasoft-helper["']?\s*$/.test(line))
+      );
+    });
+    if (!clusterRole) return { lines, status: "no-clusterrole" };
+
+    const [start, end] = clusterRole;
+    const rulesIndex = lines.findIndex((line, i) => i >= start && i < end && /^rules\s*:\s*$/.test(line));
+    if (rulesIndex === -1) return { lines, status: "no-rules" };
+
+    let contentEnd = end;
+    while (contentEnd > rulesIndex + 1 && !lines[contentEnd - 1].trim()) contentEnd--;
+
+    const itemRegex = /^(\s*)-\s/;
+    const firstItem = lines.slice(rulesIndex + 1, contentEnd).find((line) => itemRegex.test(line));
+    const itemIndent = firstItem ? firstItem.match(itemRegex)[1] : "";
+
+    const itemStarts = [];
+    for (let i = rulesIndex + 1; i < contentEnd; i++) {
+      const match = lines[i].match(itemRegex);
+      if (match && match[1] === itemIndent) itemStarts.push(i);
+    }
+
+    const alreadyGranted = itemStarts.some((itemStart, k) => {
+      const itemEnd = k + 1 < itemStarts.length ? itemStarts[k + 1] : contentEnd;
+      return this._ruleGrantsCoreEventsRead(lines.slice(itemStart, itemEnd));
+    });
+    if (alreadyGranted) return { lines, status: "already-present" };
+
+    const eventsRule = [
+      `${itemIndent}- apiGroups: [""]`,
+      `${itemIndent}  resources: ["events"]`,
+      `${itemIndent}  verbs: ["get", "list", "watch"]`,
+    ];
+    const patched = [...lines.slice(0, contentEnd), ...eventsRule, ...lines.slice(contentEnd)];
+    return { lines: patched, status: "added" };
+  }
+
+  /**
+   * Ensures the elvasoft-helper ClusterRole in an EXISTING manifest can
+   * get/list/watch events (needed by the RIS log collector for *_events.txt and
+   * the EVENT rows in TIMELINE.md). Patches the file in place and applies it
+   * only when something changed, so re-running is a no-op and never re-applies
+   * a manifest whose image line the operator hasn't just confirmed.
+   *
+   * Returns true when the file was changed and applied.
+   */
+  async ensureHelperEventsRule(remoteFilename) {
+    if (!remoteFilename) {
+      consoleUtils.info("Helper yaml file not configured — skipping (optional).");
+      return false;
+    }
+
+    const fullPath = path.join(this.remoteBasePath, remoteFilename);
+
+    try {
+      if (!fs.existsSync(fullPath)) {
+        consoleUtils.warn(`${remoteFilename} not found at ${fullPath} — nothing to update.`);
+        return false;
+      }
+
+      const lines = fs.readFileSync(fullPath, "utf8").split(/\r?\n/);
+      const { lines: patched, status } = this._addHelperEventsRule(lines);
+
+      if (status === "no-clusterrole" || status === "no-rules") {
+        consoleUtils.warn(
+          `Could not find the elvasoft-helper ClusterRole rules in ${remoteFilename} — skipping events rule.`,
+        );
+        return false;
+      }
+
+      if (status === "already-present") {
+        consoleUtils.info(`events rule already present in ${remoteFilename}.`);
+        return false;
+      }
+
+      fs.writeFileSync(fullPath, patched.join("\n"), "utf8");
+      consoleUtils.success(`Added events rule (get/list/watch) to ${remoteFilename}`);
+
+      const image = this._findFirstImageLine(patched);
+      if (image) consoleUtils.info(`Applying with ${image.content.trim()}`);
+
+      await this.execCommand(`kubectl apply -f ${fullPath}`);
+      consoleUtils.success(`Deployed: ${remoteFilename}`);
+      return true;
+    } catch (err) {
+      consoleUtils.error(`LocalAdapter error: ${err}`);
+      throw err;
+    }
+  }
+
   async updateAndApplyFile(remoteFilename, imageVersion, askHelper, options = {}) {
     const fullPath = path.join(this.remoteBasePath, remoteFilename);
     const { optional = false } = options;
