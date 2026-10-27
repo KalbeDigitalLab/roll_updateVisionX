@@ -128,9 +128,15 @@ require_env() {
 # RUNTIME
 ############################################
 
+REQUIRED_NODE_MAJOR=22
+
+current_node_major() {
+  node -p "process.versions.node.split('.')[0]" 2>/dev/null
+}
+
 install_node() {
-  echo "Node.js not found. Attempting automatic installation via apt-get..."
-  echo "There is no Node.js available; installing Node.js 20.x..."
+  echo "Node.js ${REQUIRED_NODE_MAJOR}.x is required. Attempting automatic installation via apt-get..."
+  echo "Installing Node.js ${REQUIRED_NODE_MAJOR}.x..."
 
   if ! command -v apt-get >/dev/null 2>&1; then
     echo "apt-get not available on this system. Please install Node.js manually."
@@ -149,8 +155,13 @@ install_node() {
 
   ${SUDO}apt-get update
   ${SUDO}apt-get install -y curl
-  curl -fsSL https://deb.nodesource.com/setup_20.x | ${SUDO}bash -
+  curl -fsSL https://deb.nodesource.com/setup_${REQUIRED_NODE_MAJOR}.x | ${SUDO}bash -
   ${SUDO}apt-get install -y nodejs
+
+  if [ "$(current_node_major)" -lt "$REQUIRED_NODE_MAJOR" ]; then
+    echo "Node.js $(node -v) is still installed after setup; expected ${REQUIRED_NODE_MAJOR}.x or newer."
+    exit 1
+  fi
   echo "Node.js installation completed successfully."
 }
 
@@ -159,6 +170,9 @@ run_update() {
   require_env
 
   if ! command -v node >/dev/null 2>&1; then
+    install_node
+  elif [ "$(current_node_major)" -lt "$REQUIRED_NODE_MAJOR" ]; then
+    echo "Found Node.js $(node -v), but ${REQUIRED_NODE_MAJOR}.x or newer is required."
     install_node
   fi
 
